@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScriptFlow - 商业短剧剧本生成系统</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
+    <!-- Import Inter Font for professional look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              background: '#030014', // Deepest void blue/black
+              surface: '#0f1016', // Slightly lighter void
+              surfaceHighlight: '#1a1b26', // Card background
+              border: 'rgba(255, 255, 255, 0.08)',
+              primary: '#6366f1', // Indigo
+              primaryGlow: '#818cf8',
+              accent: '#a855f7', // Purple
+              success: '#10b981',
+              danger: '#f43f5e',
+              warning: '#f59e0b',
+              textMain: '#f8fafc',
+              textMuted: '#94a3b8',
+            },
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            boxShadow: {
+              'glow': '0 0 20px rgba(99, 102, 241, 0.15)',
+              'glow-lg': '0 0 40px rgba(99, 102, 241, 0.2)',
+            },
+            animation: {
+              'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'shimmer': 'shimmer 2s linear infinite',
+            },
+            keyframes: {
+              shimmer: {
+                '0%': { backgroundPosition: '-200% 0' },
+                '100%': { backgroundPosition: '200% 0' }
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        background-color: #030014;
+        color: #f8fafc;
+        font-family: 'Inter', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden; /* App-like feel */
+      }
+
+      /* Global Noise Overlay */
+      .noise-bg {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 0;
+        pointer-events: none;
+        opacity: 0.03;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      }
+
+      /* Ambient Light Orbs */
+      .ambient-light {
+        position: fixed;
+        width: 800px;
+        height: 800px;
+        border-radius: 50%;
+        filter: blur(120px);
+        opacity: 0.15;
+        z-index: 0;
+        pointer-events: none;
+        animation: float 10s ease-in-out infinite;
+      }
+      .light-1 { top: -20%; left: -10%; background: #6366f1; }
+      .light-2 { bottom: -20%; right: -10%; background: #a855f7; animation-delay: -5s; }
+
+      @keyframes float {
+        0%, 100% { transform: translate(0, 0); }
+        50% { transform: translate(30px, 50px); }
+      }
+
+      /* Glass Panel V2 - More refined */
+      .glass-panel {
+        background: rgba(15, 16, 22, 0.4);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      }
+      
+      /* Subtle inner highlight for cards */
+      .glass-card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-top: 1px solid rgba(255, 255, 255, 0.15); /* Top light highlight */
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      }
+      .glass-card:hover {
+        background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
+        border-color: rgba(99, 102, 241, 0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 10px 40px -10px rgba(0,0,0,0.5);
+      }
+
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+      
+      /* Selection Color */
+      ::selection { background: rgba(99, 102, 241, 0.3); color: white; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <!-- Background Elements -->
+    <div class="noise-bg"></div>
+    <div class="ambient-light light-1"></div>
+    <div class="ambient-light light-2"></div>
+    
+    <div id="root" class="relative z-10 h-screen w-screen flex flex-col"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

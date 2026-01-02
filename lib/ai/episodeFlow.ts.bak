@@ -1,0 +1,419 @@
+/**
+ * Prompt 加载器
+ *
+ * 从 prompts/ 目录加载 Markdown 格式的 Prompt 文件
+ */
+
+import { projectRepo } from '../store/projectRepo';
+import { storyMemoryRepo } from '../store/memoryRepo';
+import { episodeRepo } from '../store/episodeRepo';
+import { deepseekClient, ChatMessage } from './modelClients/deepseekClient';
+import { validateEpisode1Scaffold } from '../validators/episode1Scaffold';
+import { qualityCheck } from '../validators/qualityCheck';
+import { checkInvariants } from '../storyMemory/invariants';
+import { EpisodeStatus } from '../../types';
+import { getCachedPrompt } from './promptLoader';
+import { getPacingContext } from '../pacing/pacingEngine';
+import { runAligner } from './alignerRunner';
+import { ProjectBible } from '../../types';
+import { jsonrepair } from 'jsonrepair';
+
+
+// 辅助函数：清理 AI 返回的 JSON 响应（去除 markdown 代码块和注释）
+function cleanJsonResponse(raw: string): string {
+  // 移除 ```json 和 ``` 标记
+  let cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+
+  // 移除 markdown 粗体和斜体（**text**, *text*, __text__, _text_）
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+  cleaned = cleaned.replace(/\*([^*]+)\*/g, '$1');
+  cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+  cleaned = cleaned.replace(/_([^_]+)_/g, '$1');
+
+  // 移除单行注释（// ...）
+  cleaned = cleaned.replace(/\/\/.*$/gm, '');
+
+  // 移除多行注释（/* ... */）
+  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // 移除 markdown 标题（# ... 和 ## ...）
+  cleaned = cleaned.replace(/^#{1,6}\s.*$/gm, '');
+  cleaned = cleaned.replace(/^#{1,2}\s.*$/gm, '');
+
+  // 尝试提取第一个完整的 JSON 对象（从 { 开始）
+  let jsonStart = cleaned.indexOf('{');
+  if (jsonStart === -1) {
+    jsonStart = cleaned.indexOf('[');
+  }
+
+  if (jsonStart !== -1) {
+    // 只要找到开始，就假设后面都是 JSON 内容（可能被截断），交给 safeJsonParse 处理
+    cleaned = cleaned.substring(jsonStart);
+
+    // 如果有明确的结束，尝试截取（针对未截断的正常情况优化）
+    // 但考虑到嵌套，简单的 lastIndexOf 可能不准，不如直接交给 parse 逻辑
+    // 为了兼容之前的逻辑，我们还是尝试找一下匹配的括号，但如果没有找到，不再认为是错误，而是截断
+
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+    let jsonEnd = -1;
+
+    for (let i = 0; i < cleaned.length; i++) {
+      const char = cleaned[i];
+
+      if (escapeNext) {
+        inString = false;
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escapeNext = true;
+      }
+
+      if (inString) {
+        if (char === '"') {
+          inString = false;
+        }
+      } else {
+        if (char === '"') {
+          inString = true;
+        }
+      }
+
+      if (!inString && (char === '{' || char === '[')) {
+        braceCount++;
+      }
+
+      if (!inString && (char === '}' || char === ']')) {
+        braceCount--;
+        if (braceCount === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (jsonEnd !== -1) {
+      cleaned = cleaned.substring(0, jsonEnd);
+    }
+  }
+
+  // 移除 JSON 中的尾随逗号（例如：{ "a": 1, } 或 [1, 2, ]）
+  cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
+
+  // 移除开头和结尾的空白
+  cleaned = cleaned.trim();
+  return cleaned;
+}
+
+export async function createProjectSeed(prompt: string) {
+  const sys = await getCachedPrompt({ category: 'planning', name: 'seed' });
+
+  const raw = await deepseekClient.chat([
+    { role: "system", content: sys },
+    { role: "user", content: `用户灵感: ${prompt}。Action: generate_seed` }
+  ]);
+
+  const cleaned = cleanJsonResponse(raw);
+
+  let json;
+  try {
+    json = safeJsonParse(cleaned);
+  } catch (e) {
+    throw new Error(`[createProjectSeed] Failed to parse AI response: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  console.log('[createProjectSeed] DeepSeek response:', JSON.stringify(json, null, 2));
+
+  // DeepSeek 直接返回 seed 对象，而不是 { seed: ... }
+  // 如果返回格式是 { seed: ... }，则提取 seed，否则直接使用
+  const seed = json.seed || json;
+
+  // 处理 genre 字段（DeepSeek 可能返回数组）
+  if (Array.isArray(seed.genre)) {
+    seed.genre = seed.genre[0]; // 取第一个作为主类型
+  }
+
+  // 确保 pacingTemplateId 存在
+  if (!seed.pacingTemplateId || seed.pacingTemplateId === "rise_from_zero_72ep") {
+    seed.pacingTemplateId = "urban_concept"; // 使用现有的模板 ID
+  }
+
+  return seed;
+}
+
+export async function buildBible(project: any): Promise<{ bible: ProjectBible; characters: any[] }> {
+  const sys = await getCachedPrompt({ category: 'planning', name: 'bible' });
+  const raw = await deepseekClient.chat([
+    { role: "system", content: sys },
+    { role: "user", content: `Project: ${JSON.stringify(project)}. Action: build_bible` }
+  ]);
+  const cleaned = cleanJsonResponse(raw);
+  console.log('[buildBible] Raw response length:', raw.length);
+  console.log('[buildBible] Cleaned response length:', cleaned.length);
+
+  let json;
+  try {
+    json = safeJsonParse(cleaned);
+  } catch (e) {
+    throw new Error(`[buildBible] Failed to parse AI response: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  console.log('[buildBible] Parsed JSON keys:', Object.keys(json));
+
+  // 确保返回结构正确
+  if (!json.bible) {
+    throw new Error("Missing 'bible' in response");
+  }
+  if (!json.bible.canonRules) {
+    json.bible.canonRules = {
+      worldSetting: json.bible.worldSetting || "修仙世界",
+      coreRules: json.bible.coreRules || ["实力为尊", "弱肉强食"],
+      powerOrWealthSystem: json.bible.powerOrWealthSystem || "灵力修炼",
+      forbiddenChanges: json.bible.forbiddenChanges || []
+    };
+  }
+  if (!json.bible.keyEvents) {
+    json.bible.keyEvents = [];
+  }
+  if (!json.characters || json.characters.length === 0) {
+    json.characters = [
+      {
+        id: "c1",
+        name: "主角",
+        roleType: "PROTAGONIST",
+        description: "现代成功学大师",
+        status: { identity: "", goal: "", relationships: {}, secretsKnown: [], secretsHidden: [] }
+      }
+    ];
+  }
+
+  return json;
+}
+
+export async function generateOutline(project: any): Promise<any> {
+  const sys = await getCachedPrompt({ category: 'planning', name: 'outline' });
+
+  // 简洁明确的集数提示
+  const episodesInfo = `Episodes: ${project.totalEpisodes}`;
+  const actionInstruction = `Action: generate_outline_for_${project.totalEpisodes}_episodes`;
+
+  const raw = await deepseekClient.chat([
+    { role: "system", content: sys },
+    { role: "user", content: `Project: ${project.name}. ${episodesInfo}. ${actionInstruction}` }
+  ]);
+
+  const cleaned = cleanJsonResponse(raw);
+  console.log('[generateOutline] Raw response length:', raw.length);
+  console.log('[generateOutline] Cleaned response length:', cleaned.length);
+
+  let json;
+  try {
+    json = safeJsonParse(cleaned);
+  } catch (e) {
+    throw new Error(`[generateOutline] Failed to parse AI response: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  console.log('[generateOutline] Parsed JSON keys:', Object.keys(json));
+  return json.outline;
+}
+
+export async function generateOneEpisode({ projectId, episodeIndex }: { projectId: string; episodeIndex: number }) {
+  const project = await projectRepo.get(projectId);
+  if (!project) throw new Error("Project not found");
+
+  const memoryBefore = await storyMemoryRepo.get(projectId);
+
+  // Set status to GENERATING
+  await episodeRepo.save(projectId, episodeIndex, { status: EpisodeStatus.GENERATING });
+
+  const outline = project.episodes.find(e => e.id === episodeIndex)?.outline;
+  if (!outline) throw new Error("Outline missing");
+
+  // 根据集数选择对应的 Prompt
+  let promptName = 'episode_writer_std';
+  if (episodeIndex === 1) {
+    promptName = 'episode_writer_ep1';
+  } else if (episodeIndex === 2) {
+    promptName = 'episode_writer_ep2';
+  }
+
+  const systemPrompt = await getCachedPrompt({ category: 'execution', name: promptName });
+
+  const pacingContext = getPacingContext(project, episodeIndex);
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user", content: JSON.stringify({
+        project: project,
+        bible: project.bible,
+        characters: project.characters,
+        outline,
+        episodeIndex,
+        pacingContext,
+        storyMemory: memoryBefore
+      })
+    }
+  ];
+
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const raw = await deepseekClient.chat(messages, { temperature: 0.7 });
+      const cleaned = cleanJsonResponse(raw);
+
+      let episodeObject: any;
+
+      try {
+        const json = JSON.parse(cleaned);
+        episodeObject = json;
+      } catch (parseError) {
+        // 清理失败，尝试继续
+        console.warn(`[generateOneEpisode] Attempt ${attempt} parse failed, trying to extract content`);
+
+        const content = cleaned.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        const contentMatch = content.match(/EP \d+[:：](.+?)(?=\n|$)/);
+
+        if (contentMatch) {
+          const episodeText = contentMatch[1].trim();
+          episodeObject = {
+            episodeIndex,
+            content: episodeText,
+            summary: episodeText.split('：')[0] || `EP ${episodeIndex}`,
+            outline: episodeText.match(/冲突[：：](.+)/)?.[0] || episodeText,
+            highlight: episodeText.match(/爽点[：：](.+)/)?.[0] || episodeText,
+            hook: episodeText.match(/Hook[：：](.+)/)?.[0] || episodeText,
+            act: episodeText.match(/Act\s*\d+[:：]/)?.[0] || '1'
+          };
+
+          // Break loop logic handled by success flow
+        } else {
+          throw new Error(`Failed to parse episode content after ${maxRetries} attempts`);
+        }
+      }
+
+      if (!episodeObject) {
+        throw new Error(`Failed to parse episode content after ${maxRetries} attempts`);
+      }
+
+      // 更新 validation
+      const validation = { fastCheck: { passed: true, errors: [] as string[] }, qualityCheck: { passed: true, issues: [] as string[] } };
+
+      try {
+        const scaffoldResult = validateEpisode1Scaffold(episodeObject);
+        validation.fastCheck = scaffoldResult as any;
+        validation.qualityCheck = qualityCheck(episodeObject, outline);
+      } catch (e) {
+        console.warn('[generateOneEpisode] Validation failed:', e);
+      }
+
+      // 运行 aligner
+      const alignment = await runAligner({
+        project,
+        episode: episodeObject,
+        pacingContext
+      });
+
+      // 保存到项目
+      const episode = {
+        episodeIndex,
+        content: episodeObject.content,
+        summary: episodeObject.summary,
+        outline: episodeObject.outline || episodeObject.outline,
+        highlight: episodeObject.highlight || episodeObject.highlight,
+        hook: episodeObject.hook || episodeObject.hook,
+        act: episodeObject.act || episodeObject.act,
+        validation,
+        alignment,
+        status: EpisodeStatus.COMPLETED
+      };
+
+      await episodeRepo.save(projectId, episodeIndex, {
+        ...episode,
+        status: EpisodeStatus.COMPLETED
+      });
+
+      // 更新 Story Memory
+      await storyMemoryRepo.save(projectId, {
+        canonLayer: {
+          worldRules: memoryBefore.canonLayer.worldRules,
+          lockedEvents: [...memoryBefore.canonLayer.lockedEvents],
+          deadCharacters: memoryBefore.canonLayer.deadCharacters
+        },
+        characterLayer: {
+          states: memoryBefore.characterLayer.states
+        },
+        plotLayer: {
+          lockedEvents: [...memoryBefore.plotLayer.lockedEvents],
+          ongoingConflicts: [...memoryBefore.plotLayer.ongoingConflicts],
+          foreshadowedEvents: [...memoryBefore.plotLayer.foreshadowedEvents]
+        }
+      });
+
+      console.log(`[generateOneEpisode] Episode ${episodeIndex} generated successfully`);
+      return episode;
+    } catch (error: any) {
+      lastError = error;
+      if (attempt === maxRetries) {
+        throw error;
+      }
+    }
+  }
+}
+
+export async function alignerRunner(project: any) {
+  const sys = await getCachedPrompt({ category: 'validation', name: 'script_aligner' });
+
+  const raw = await deepseekClient.chat([
+    { role: "system", content: sys },
+    { role: "user", content: `Project: ${JSON.stringify(project)}. Action: align_content` }
+  ]);
+
+  const cleaned = cleanJsonResponse(raw);
+  console.log('[alignerRunner] Raw response length:', raw.length);
+  console.log('[alignerRunner] Cleaned response length:', cleaned.length);
+
+  let json;
+  try {
+    json = JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error(`[alignerRunner] Failed to parse AI response: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (!json.alignment) {
+    throw new Error("Missing 'alignment' in response");
+  }
+
+  return json.alignment;
+}
+
+export async function batchRunner(project: any, start: number, end: number) {
+  console.log(`[batchRunner] Starting batch from ${start} to ${end}`);
+
+  let completedCount = 0;
+  let failedCount = 0;
+
+  for (let i = start; i <= end; i++) {
+    try {
+      const episode = await generateOneEpisode({ projectId: project.id, episodeIndex: i });
+
+      if (episode?.status === EpisodeStatus.COMPLETED) {
+        completedCount++;
+      } else {
+        failedCount++;
+      }
+    } catch (error: any) {
+      console.error(`[batchRunner] Episode ${i} failed:`, error);
+      failedCount++;
+    }
+  }
+
+  console.log(`[batchRunner] Batch complete. Completed: ${completedCount}, Failed: ${failedCount}`);
+
+  return {
+    completed: completedCount,
+    failed: failedCount
+  };
+}

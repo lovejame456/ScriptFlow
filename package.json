@@ -1,0 +1,30 @@
+{
+  "name": "scriptflow",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:deepseek:e2e": "tsx scripts/test_deepseek_e2e.ts",
+    "test:m15": "tsx scripts/test-m15-production.ts",
+    "test:m16": "tsx scripts/test-m16-structure-first.ts",
+    "test:m16.3": "tsx scripts/test-m16-3-reveal-scheduler.ts"
+  },
+  "dependencies": {
+    "jsonrepair": "^3.13.1",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "dotenv": "^17.2.3",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
