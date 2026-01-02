@@ -1,0 +1,21 @@
+{
+  "runId": "run-pass-2",
+  "projectId": "test-project",
+  "timestamp": "2026-01-02T22:28:47.785Z",
+  "range": {
+    "fromEpisode": 1,
+    "toEpisode": 3
+  },
+  "episodes": [],
+  "aggregates": {
+    "health": {
+      "score": 75,
+      "warnings": [],
+      "errors": []
+    },
+    "retry": {
+      "avgRetries": 0.5,
+      "p95Retries": 0
+    }
+  }
+}

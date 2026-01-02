@@ -13,6 +13,8 @@
  */
 
 import { RevealType } from './revealScheduler';
+// M16.5: 导入 AdaptiveParams 类型
+import { AdaptiveParams } from '../../types';
 
 /**
  * 压力向量类型
@@ -93,14 +95,18 @@ function generatePressureVector(
  * @param pressure - 压力向量
  * @param episode - 集数
  * @param revealType - Reveal 类型
+ * @param pressureMultiplier - 压力倍数（M16.5）
  * @returns string - 压力提示
+ * 
+ * M16.5: 根据 pressureMultiplier 调整提示语气和数量
  */
 function generatePressureHint(
   pressure: PressureVector,
   episode: number,
-  revealType: RevealType
+  revealType: RevealType,
+  pressureMultiplier: number = 1.0
 ): string {
-  const hints: Record<PressureVector, string[]> = {
+  const baseHints: Record<PressureVector, string[]> = {
     'POWER': [
       '本 Reveal 必须明确展示力量的此消彼长，主角或反派的力量地位发生实质性变化。',
       '要求：使用具体的事件或能力展示，而非抽象描述。',
@@ -128,8 +134,63 @@ function generatePressureHint(
     ]
   };
 
-  const hint = hints[pressure].join('\n');
-  console.log(`[AntagonistBinder] Generated pressure hint for ${pressure}`);
+  // M16.5: 额外提示（用于增强压力）
+  const additionalHints: Record<PressureVector, string[]> = {
+    'POWER': [
+      '【增强】力量变化必须有明确的触发事件（觉醒、受伤、突破等）。',
+      '【增强】其他角色必须对力量变化做出直接反应（恐惧、轻视、忌惮）。'
+    ],
+    'RESOURCE': [
+      '【增强】资源变化必须影响主角的决策选项（被迫妥协、冒险获取等）。',
+      '【增强】反派的资源状况也必须同步体现（富足、匮乏、转移）。'
+    ],
+    'STATUS': [
+      '【增强】地位变化必须导致权力结构的重新洗牌（上位、边缘化、联盟瓦解）。',
+      '【增强】主角和反派的地位必须发生此消彼长（一方升另一方降）。'
+    ],
+    'RELATION': [
+      '【增强】关系变化必须有明确的触发事件（背叛、误解、利益冲突）。',
+      '【增强】第三方角色的立场也要随之调整（站队、观望、投机）。'
+    ],
+    'LIFE_THREAT': [
+      '【增强】生存威胁必须有明确的倒计时或紧迫性（时限、致命伤、绝境）。',
+      '【增强】主角的应对必须显示绝望感和求生欲（非理性决策、冒险）。'
+    ]
+  };
+
+  // M16.5: 语气强度调整（P0 修复：语义统一）
+  // < 0.9: 降压，提示更温和（移除硬词，改为柔词）
+  // > 1.1: 加压，提示更强硬（加入硬词）
+  let intensityPrefix = '';
+  if (pressureMultiplier < 0.9) {
+    // 降压：使用更温和的语气词
+    intensityPrefix = '【建议】';
+  } else if (pressureMultiplier > 1.1) {
+    // 加压：使用更强的语气词
+    intensityPrefix = '【必须】';
+  }
+
+  // M16.5: 提示数量调整（P0 修复：语义统一）
+  // < 0.9: 降压，精简提示（只保留前 2 条关键提示）
+  // > 1.1: 加压，增强提示（追加 1-2 条可验证/后果提示）
+  let selectedHints = [...baseHints[pressure]];
+  
+  if (pressureMultiplier < 0.9) {
+    // 降低压力：精简提示（只保留前 2 条关键提示）
+    selectedHints = selectedHints.slice(0, 2);
+    console.log(`[AntagonistBinder] M16.5: Reduced pressure hints (multiplier=${pressureMultiplier}, kept ${selectedHints.length} hints)`);
+  } else if (pressureMultiplier > 1.1) {
+    // 增强压力：添加额外提示（可验证/后果）
+    const extra = additionalHints[pressure];
+    if (extra && extra.length > 0) {
+      selectedHints = [...selectedHints, ...extra.slice(0, 2)]; // 最多追加 2 条
+    }
+    console.log(`[AntagonistBinder] M16.5: Enhanced pressure hints (multiplier=${pressureMultiplier}, total ${selectedHints.length} hints)`);
+  }
+
+  // 应用语气前缀
+  const hint = selectedHints.map(h => intensityPrefix + h).join('\n');
+  console.log(`[AntagonistBinder] M16.5: Generated hint for ${pressure} (multiplier=${pressureMultiplier}, ${selectedHints.length} hints)`);
 
   return hint;
 }
@@ -139,6 +200,8 @@ function generatePressureHint(
  *
  * @param args - 绑定参数
  * @returns AntagonistPressureBinding - 压力绑定结果
+ * 
+ * M16.5: 支持 adaptiveParams（通过 pressureMultiplier 调整压力提示）
  */
 export function bindRevealToAntagonistPressure(args: {
   episode: number;
@@ -146,17 +209,20 @@ export function bindRevealToAntagonistPressure(args: {
   revealScope: 'PROTAGONIST' | 'ANTAGONIST' | 'WORLD';
   project: any;
   outline: any;
+  adaptiveParams?: AdaptiveParams;
 }): AntagonistPressureBinding {
-  const { episode, revealType, revealScope, project, outline } = args;
+  const { episode, revealType, revealScope, project, outline, adaptiveParams } = args;
 
   console.log(`[AntagonistBinder] Binding reveal to antagonist pressure`);
   console.log(`[AntagonistBinder] Episode: ${episode}, Type: ${revealType}, Scope: ${revealScope}`);
+  console.log(`[AntagonistBinder] M16.5: Adaptive params:`, adaptiveParams);
 
   // 生成压力向量
   const pressure = generatePressureVector(episode, revealType, revealScope);
 
-  // 生成压力提示
-  const hint = generatePressureHint(pressure, episode, revealType);
+  // M16.5: 使用 pressureMultiplier 调整压力提示
+  const pressureMultiplier = adaptiveParams?.pressureMultiplier ?? 1.0;
+  const hint = generatePressureHint(pressure, episode, revealType, pressureMultiplier);
 
   const binding: AntagonistPressureBinding = {
     pressure,
@@ -204,4 +270,5 @@ export function validateRevealAgainstBinding(
 
   return { valid: true };
 }
+
 

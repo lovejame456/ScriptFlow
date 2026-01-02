@@ -1,0 +1,125 @@
+{
+  "runId": "test-m16.4",
+  "projectId": "test-project",
+  "timestamp": "2026-01-02T21:08:34.376Z",
+  "range": {
+    "fromEpisode": 1,
+    "toEpisode": 3
+  },
+  "episodes": [
+    {
+      "episode": 1,
+      "contract": {
+        "reveal": {
+          "required": false,
+          "type": "FACT",
+          "scope": "PROTAGONIST"
+        },
+        "pressure": {}
+      },
+      "writer": {
+        "slotRetries": 0,
+        "slotValidation": {
+          "passed": true,
+          "errors": []
+        }
+      },
+      "postSignals": {
+        "revealIsConcrete": true,
+        "revealHasConsequence": true
+      }
+    },
+    {
+      "episode": 2,
+      "contract": {
+        "reveal": {
+          "required": true,
+          "type": "INFO",
+          "scope": "PROTAGONIST",
+          "cadenceTag": "NORMAL",
+          "noRepeatKey": "reveal_power_secret"
+        },
+        "pressure": {}
+      },
+      "writer": {
+        "slotRetries": 1,
+        "slotValidation": {
+          "passed": true,
+          "errors": []
+        }
+      },
+      "postSignals": {
+        "revealIsConcrete": true,
+        "revealHasConsequence": true
+      }
+    },
+    {
+      "episode": 3,
+      "contract": {
+        "reveal": {
+          "required": true,
+          "type": "RELATION",
+          "scope": "ANTAGONIST",
+          "cadenceTag": "NORMAL",
+          "noRepeatKey": "reveal_identity_secret"
+        },
+        "pressure": {}
+      },
+      "writer": {
+        "slotRetries": 2,
+        "slotValidation": {
+          "passed": false,
+          "errors": [
+            "NEW_REVEAL slot missing"
+          ]
+        }
+      },
+      "postSignals": {
+        "revealIsConcrete": false,
+        "revealHasConsequence": false
+      }
+    }
+  ],
+  "aggregates": {
+    "reveal": {
+      "typeCounts": {
+        "FACT": 1,
+        "INFO": 1,
+        "RELATION": 1,
+        "IDENTITY": 0
+      },
+      "typeTransitionsOk": true,
+      "duplicatePrevented": 0,
+      "cadence": {
+        "NORMAL": 3,
+        "SPIKE": 0
+      }
+    },
+    "pressure": {
+      "vectorCounts": {
+        "POWER": 0,
+        "RESOURCE": 0,
+        "STATUS": 0,
+        "RELATION": 0,
+        "LIFE_THREAT": 0
+      },
+      "maxConsecutiveDrop": 0
+    },
+    "retry": {
+      "episodesWithRetry": 2,
+      "avgRetries": 1,
+      "p95Retries": 1
+    },
+    "health": {
+      "warnings": [
+        "EP3: reveal not concrete",
+        "EP3: reveal no consequence",
+        "High retry frequency: writer near structure boundary"
+      ],
+      "errors": [
+        "EP3: slotValidationFail=NEW_REVEAL slot missing"
+      ],
+      "score": 65
+    }
+  }
+}

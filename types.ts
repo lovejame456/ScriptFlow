@@ -798,6 +798,38 @@ export const PACING_TEMPLATES: Record<string, PacingTemplate> = {
 
 export type BatchStatus = "IDLE" | "RUNNING" | "PAUSED" | "FAILED" | "DONE";
 
+// --- M16.5: Adaptive Params（自适应参数） ---
+
+/**
+ * AdaptiveParams - 自适应参数（M16.5）
+ * 
+ * 由策略引擎根据 Metrics 自动生成，用于动态调整生成行为
+ */
+export interface AdaptiveParams {
+  /**
+   * Reveal 节奏偏置
+   * - NORMAL: 标准节奏（约 20% SPIKE）
+   * - SPIKE_UP: 提高 SPIKE 频率（约 40% SPIKE）
+   * - SPIKE_DOWN: 降低 SPIKE 频率（约 10% SPIKE）
+   */
+  revealCadenceBias: 'NORMAL' | 'SPIKE_UP' | 'SPIKE_DOWN';
+  
+  /**
+   * 最大 Slot 重试次数
+   * - 默认: 3
+   * - 自适应: 可能提高到 4（当 score < 60 或 errors > 0）
+   */
+  maxSlotRetries: number;
+  
+  /**
+   * 压力倍数
+   * - 默认: 1.0
+   * - 0.8-0.9: 降低压力（warnings 较多时）
+   * - 1.0-1.2: 标准/增强压力
+   */
+  pressureMultiplier: number;
+}
+
 export interface BatchState {
   projectId: string;
   status: BatchStatus;
@@ -810,6 +842,8 @@ export interface BatchState {
   lastError?: string;
   updatedAt: number;
   health?: "HEALTHY" | "WARNING" | "RISKY";
+  // M16.5: 自适应参数快照
+  adaptiveParams?: AdaptiveParams;
 }
 
 export interface EpisodeAttemptLog {

@@ -1,17 +1,49 @@
 import { generateEpisodeFast } from './episodeFlow';
 import { batchRepo } from '../batch/batchRepo';
-import { BatchState, BatchStatus, EpisodeStatus } from '../../types';
+import { BatchState, BatchStatus, EpisodeStatus, AdaptiveParams, AdaptiveParamsWithSource } from '../../types';
 import { episodeRepo } from '../store/episodeRepo';
 import { projectRepo } from '../store/projectRepo';
 import { getPacingContext } from '../pacing/pacingEngine';
 import { isStructureFailError } from './slotValidator';
+import { metrics } from '../metrics/runMetrics';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  deriveAdaptiveParams,
+  extractPolicyInput,
+  getDefaultParams,
+  createAdaptiveParamsSnapshot,
+  ParamSource
+} from '../metrics/policyEngine';
+import {
+  MetaPolicy,
+  ProjectProfile,
+  MetaPolicyBias,
+  bucketByProfile
+} from '../metrics/metaTypes';
 
 export async function startBatch(args: {
   projectId: string;
   start: number;
   end: number;
+  projectProfile?: ProjectProfile;  // M16.6: 新增项目画像
 }): Promise<BatchState> {
-  const { projectId, start, end } = args;
+  const { projectId, start, end, projectProfile } = args;
+
+  // M16.4: 初始化 metrics
+  metrics.startRun({
+    runId: `${projectId}_${Date.now()}`,
+    projectId,
+    fromEpisode: start,
+    toEpisode: end
+  });
+
+  // M16.5/M16.6: 加载或推导自适应参数（传入 projectProfile）
+  const adaptiveParamsResult = loadOrDeriveAdaptiveParams(projectId, projectProfile);
+  console.log(`[BatchRunner] M16.5/M16.6: Loaded adaptive params:`, adaptiveParamsResult);
+
+  // M16.5: 记录自适应参数到 metrics
+  metrics.recordAdaptiveParams(adaptiveParamsResult);
 
   const batchState: BatchState = {
     projectId,
@@ -22,7 +54,12 @@ export async function startBatch(args: {
     completed: [],
     failed: [],
     hardFailCount: 0,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
+    adaptiveParams: {
+      revealCadenceBias: adaptiveParamsResult.revealCadenceBias,
+      maxSlotRetries: adaptiveParamsResult.maxSlotRetries,
+      pressureMultiplier: adaptiveParamsResult.pressureMultiplier
+    }
   };
 
   batchRepo.save(batchState);
@@ -119,6 +156,14 @@ async function runLoop(projectId: string): Promise<void> {
       } else {
         batch.status = 'DONE';
         console.log(`[BatchRunner] Batch completed for ${projectId}`);
+
+        // M16.4: 写入 metrics 报告
+        try {
+          const { file } = metrics.finalizeAndWrite('reports');
+          console.log(`[BatchRunner] M16.4 metrics report written to: ${file}`);
+        } catch (err) {
+          console.warn(`[BatchRunner] Failed to write metrics report:`, err);
+        }
       }
 
       batchRepo.save(batch);
@@ -352,6 +397,228 @@ function calculateHealth(batch: BatchState): "HEALTHY" | "WARNING" | "RISKY" {
   }
 
   return "HEALTHY";
+}
+
+// ========== M16.5/M16.6: 自适应参数加载 ==========
+
+/**
+ * 加载或推导自适应参数
+ *
+ * 优先级（M16.6 升级）：
+ * 1. meta/meta_policy.json（Meta-Policy）+ baseline/last_run (meta_policy)
+ * 2. baseline/m16_metrics_baseline.json (baseline)
+ * 3. reports/m16_metrics_*.json 中最新的 (last_run)
+ * 4. 默认参数 (default)
+ *
+ * @param projectId - 项目 ID
+ * @param projectProfile - 项目画像（M16.6）
+ * @returns AdaptiveParamsWithSource - 自适应参数（带来源标记）
+ */
+function loadOrDeriveAdaptiveParams(
+  projectId: string,
+  projectProfile?: ProjectProfile
+): AdaptiveParamsWithSource {
+  console.log(`[BatchRunner] M16.5/M16.6: Loading adaptive params for project ${projectId}`);
+
+  // M16.6: 尝试加载 Meta Policy（新增最高优先级）
+  const metaBias = tryLoadMetaPolicy(projectId, projectProfile);
+  if (metaBias) {
+    console.log(`[BatchRunner] M16.6: Using meta policy bias`);
+    console.log(`[BatchRunner] M16.6: Meta bias:`, metaBias);
+
+    // 读取状态修正指标（baseline / last_run）
+    const policyInput = loadStateBasedInput(projectId);
+
+    if (policyInput) {
+      // 合并 Meta Bias + 状态修正
+      const params = deriveAdaptiveParams(policyInput, metaBias);
+      return createAdaptiveParamsSnapshot(params, 'meta_policy');
+    } else {
+      // 只有 Meta Bias，没有状态修正
+      const params = {
+        revealCadenceBias: metaBias.revealCadenceBiasPrior,
+        maxSlotRetries: metaBias.retryBudgetPrior,
+        pressureMultiplier: metaBias.pressureMultiplierPrior
+      };
+      return createAdaptiveParamsSnapshot(params, 'meta_policy');
+    }
+  }
+
+  // M16.5: 优先级 2 - 尝试读取 baseline
+  const baselinePath = path.join(process.cwd(), 'baseline', 'm16_metrics_baseline.json');
+  const baselineResult = tryLoadMetricsFile(baselinePath);
+  if (baselineResult) {
+    console.log(`[BatchRunner] M16.5: Using baseline metrics from ${baselinePath}`);
+    const params = deriveAdaptiveParams(baselineResult);
+    return createAdaptiveParamsSnapshot(params, 'baseline');
+  }
+
+  // M16.5: 优先级 3 - 尝试读取最后一次运行
+  const lastRunResult = tryLoadLastRunMetrics(projectId);
+  if (lastRunResult) {
+    console.log(`[BatchRunner] M16.5: Using last run metrics`);
+    const params = deriveAdaptiveParams(lastRunResult);
+    return createAdaptiveParamsSnapshot(params, 'last_run');
+  }
+
+  // 优先级 4 - 使用默认参数
+  console.log(`[BatchRunner] M16.5: No metrics found, using default params`);
+  return getDefaultParams();
+}
+
+/**
+ * 加载基于状态的策略输入（baseline 或 last_run）
+ *
+ * @param projectId - 项目 ID
+ * @returns AdaptivePolicyInput | null
+ */
+function loadStateBasedInput(projectId: string): any | null {
+  // 1. 尝试 baseline
+  const baselinePath = path.join(process.cwd(), 'baseline', 'm16_metrics_baseline.json');
+  const baselineResult = tryLoadMetricsFile(baselinePath);
+  if (baselineResult) {
+    console.log(`[BatchRunner] M16.6: Loaded baseline state input`);
+    return baselineResult;
+  }
+
+  // 2. 尝试 last_run
+  const lastRunResult = tryLoadLastRunMetrics(projectId);
+  if (lastRunResult) {
+    console.log(`[BatchRunner] M16.6: Loaded last_run state input`);
+    return lastRunResult;
+  }
+
+  console.log(`[BatchRunner] M16.6: No state-based input found`);
+  return null;
+}
+
+/**
+ * 尝试加载 Meta Policy
+ *
+ * @param projectId - 项目 ID
+ * @param projectProfile - 项目画像
+ * @returns MetaPolicyBias | null - Meta 偏置，加载失败或 confidence 不足则返回 null
+ */
+function tryLoadMetaPolicy(
+  projectId: string,
+  projectProfile?: ProjectProfile
+): MetaPolicyBias | null {
+  try {
+    const metaPolicyPath = path.join(process.cwd(), 'meta', 'meta_policy.json');
+
+    if (!fs.existsSync(metaPolicyPath)) {
+      console.log(`[BatchRunner] M16.6: Meta policy not found: ${metaPolicyPath}`);
+      return null;
+    }
+
+    const content = fs.readFileSync(metaPolicyPath, 'utf-8');
+    const metaPolicy: MetaPolicy = JSON.parse(content);
+
+    console.log(`[BatchRunner] M16.6: Loaded meta policy v${metaPolicy.version}`);
+
+    // 如果没有提供 projectProfile，尝试从项目元数据推断
+    if (!projectProfile) {
+      console.warn(`[BatchRunner] M16.6: No project profile provided, skipping meta policy`);
+      return null;
+    }
+
+    // 根据 projectProfile 找到对应 bucket 的 bias
+    const bucketKey = bucketByProfile(projectProfile);
+    const bucket = metaPolicy.buckets[bucketKey];
+
+    if (!bucket) {
+      console.log(`[BatchRunner] M16.6: Bucket not found for ${bucketKey}, skipping meta policy`);
+      return null;
+    }
+
+    const { bias } = bucket;
+
+    // 检查 confidence，低于 0.3 不使用
+    if (bias.confidence < 0.3) {
+      console.log(`[BatchRunner] M16.6: Meta bias confidence too low (${bias.confidence.toFixed(2)}), skipping`);
+      return null;
+    }
+
+    console.log(`[BatchRunner] M16.6: Using meta bias for bucket ${bucketKey}`);
+    console.log(`[BatchRunner] M16.6: Meta bias rationale:`, bias.rationale);
+
+    return bias;
+  } catch (error: any) {
+    console.warn(`[BatchRunner] M16.6: Failed to load meta policy:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * 尝试加载指定路径的 Metrics 文件
+ * 
+ * @param filePath - 文件路径
+ * @returns AdaptivePolicyInput | null - 策略输入，加载失败则返回 null
+ */
+function tryLoadMetricsFile(filePath: string): any | null {
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.log(`[BatchRunner] M16.5: Metrics file not found: ${filePath}`);
+      return null;
+    }
+
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const metricsJson = JSON.parse(content);
+    
+    // 提取策略输入
+    const policyInput = extractPolicyInput(metricsJson);
+    if (policyInput) {
+      console.log(`[BatchRunner] M16.5: Successfully extracted policy input from ${filePath}`);
+      return policyInput;
+    }
+
+    console.warn(`[BatchRunner] M16.5: Failed to extract policy input from ${filePath}`);
+    return null;
+  } catch (error: any) {
+    console.warn(`[BatchRunner] M16.5: Failed to load metrics file ${filePath}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * 尝试加载最后一次运行的 Metrics
+ * 
+ * @param projectId - 项目 ID
+ * @returns AdaptivePolicyInput | null - 策略输入，加载失败则返回 null
+ */
+function tryLoadLastRunMetrics(projectId: string): any | null {
+  try {
+    const reportsDir = path.join(process.cwd(), 'reports');
+    if (!fs.existsSync(reportsDir)) {
+      console.log(`[BatchRunner] M16.5: Reports directory not found: ${reportsDir}`);
+      return null;
+    }
+
+    // 读取所有 m16_metrics_*.json 文件
+    const files = fs.readdirSync(reportsDir)
+      .filter(f => f.startsWith('m16_metrics_') && f.endsWith('.json'))
+      .filter(f => f !== 'm16_metrics_baseline.json'); // 排除 baseline
+
+    if (files.length === 0) {
+      console.log(`[BatchRunner] M16.5: No metrics files found in ${reportsDir}`);
+      return null;
+    }
+
+    // 按修改时间排序，取最新的
+    const filesWithMtime = files.map(f => ({
+      file: f,
+      mtime: fs.statSync(path.join(reportsDir, f)).mtimeMs
+    })).sort((a, b) => b.mtime - a.mtime);
+
+    const latestFile = filesWithMtime[0].file;
+    const latestPath = path.join(reportsDir, latestFile);
+
+    console.log(`[BatchRunner] M16.5: Latest metrics file: ${latestFile}`);
+    return tryLoadMetricsFile(latestPath);
+  } catch (error: any) {
+    console.warn(`[BatchRunner] M16.5: Failed to load last run metrics:`, error.message);
+    return null;
+  }
 }
 
 

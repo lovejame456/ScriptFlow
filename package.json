@@ -10,7 +10,15 @@
     "test:deepseek:e2e": "tsx scripts/test_deepseek_e2e.ts",
     "test:m15": "tsx scripts/test-m15-production.ts",
     "test:m16": "tsx scripts/test-m16-structure-first.ts",
-    "test:m16.3": "tsx scripts/test-m16-3-reveal-scheduler.ts"
+    "test:m16.3": "tsx scripts/test-m16-3-reveal-scheduler.ts",
+    "test:m16.4": "tsx scripts/test-m16.4-metrics.ts",
+    "test:m16.5": "tsx scripts/test-m16.5-adaptive-scheduling.ts",
+    "test:m16.6": "tsx scripts/test-m16.6-meta-policy.ts",
+    "test:m16.7": "tsx scripts/test-m16.7-gold-promote.ts",
+    "metrics:m16": "tsx scripts/m16-metrics-report.ts",
+    "metrics:diff": "tsx scripts/m16-metrics-diff.ts",
+    "meta:build": "tsx scripts/m16-meta-build.ts",
+    "gold:promote": "tsx scripts/m16-gold-promote.ts"
   },
   "dependencies": {
     "jsonrepair": "^3.13.1",

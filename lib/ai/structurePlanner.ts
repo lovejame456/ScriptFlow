@@ -27,6 +27,8 @@ import {
   validateRevealAgainstBinding,
   AntagonistPressureBinding
 } from './antagonistBinder';
+// M16.5: 导入 AdaptiveParams
+import { AdaptiveParams } from '../../types';
 
 /**
  * 辅助函数：清理 AI 返回的 JSON 响应（去除 markdown 代码块和注释）
@@ -113,18 +115,22 @@ export interface StructureContract {
  * @param episodeIndex - 剧集编号
  * @param project - 项目信息
  * @param outline - 本集大纲
+ * @param adaptiveParams - 自适应参数（M16.5）
  * @returns StructureContract - 结构契约
  *
  * M16.3: 集成 revealScheduler 实现类型调度和去重
+ * M16.5: 集成 adaptiveParams 实现自适应 cadenceTag
  */
 export async function generateStructureContract({
   episodeIndex,
   project,
-  outline
+  outline,
+  adaptiveParams
 }: {
   episodeIndex: number;
   project: any;
   outline: any;
+  adaptiveParams?: AdaptiveParams;
 }): Promise<StructureContract> {
 
   console.log(`[StructurePlanner] Generating contract for EP${episodeIndex}`);
@@ -250,13 +256,14 @@ export async function generateStructureContract({
       throw new Error(`[StructurePlanner] ${summaryValidation.error}`);
     }
 
-    // M16.3: 绑定到反派压力
+    // M16.3: 绑定到反派压力（M16.5: 传递 adaptiveParams）
     const antagonistBinding = bindRevealToAntagonistPressure({
       episode: episodeIndex,
       revealType: json.mustHave.newReveal.type,
       revealScope: json.mustHave.newReveal.scope,
       project,
-      outline
+      outline,
+      adaptiveParams  // M16.5: 传递自适应参数
     });
 
     // M16.3: 验证 Reveal summary 是否符合压力绑定要求
@@ -271,8 +278,8 @@ export async function generateStructureContract({
     // M16.3: 生成去重 key
     const noRepeatKey = generateNoRepeatKey(json.mustHave.newReveal.summary);
 
-    // M16.3: 生成 cadenceTag（简单实现：EP6 为 SPIKE，其他为 NORMAL）
-    const cadenceTag: 'NORMAL' | 'SPIKE' = episodeIndex === 6 ? 'SPIKE' : 'NORMAL';
+    // M16.5: 生成 cadenceTag（混合策略：概率调整 + 固定关键节点）
+    const cadenceTag: 'NORMAL' | 'SPIKE' = determineCadenceTag(episodeIndex, adaptiveParams);
 
     // 构建完整的契约
     const contract: StructureContract = {
@@ -372,5 +379,62 @@ export function buildSlotWriteInput(
   }
 
   return { slots };
+}
+
+// ========== M16.5: 自适应 cadenceTag 调整 ==========
+
+/**
+ * 确定 cadenceTag（混合策略）
+ *
+ * 策略：
+ * 1. 固定关键节点：EP6, EP12, EP18 强制 SPIKE
+ * 2. 概率调整：根据 revealCadenceBias 调整 SPIKE 概率
+ * 3. M16.6.1 稳定性：SPIKE 概率上限 cap（防震荡）
+ *
+ * @param episodeIndex - 剧集编号
+ * @param adaptiveParams - 自适应参数
+ * @returns cadenceTag - 'NORMAL' | 'SPIKE'
+ */
+function determineCadenceTag(
+  episodeIndex: number,
+  adaptiveParams?: AdaptiveParams
+): 'NORMAL' | 'SPIKE' {
+  // 规则 1: 固定关键节点（强制 SPIKE，不受 cap 影响）
+  if ([6, 12, 18].includes(episodeIndex)) {
+    console.log(`[StructurePlanner] Fixed key episode ${episodeIndex} -> SPIKE`);
+    return 'SPIKE';
+  }
+
+  // 如果没有自适应参数，使用简单逻辑
+  if (!adaptiveParams) {
+    return 'NORMAL';
+  }
+
+  // 规则 2: 概率调整
+  const { revealCadenceBias } = adaptiveParams;
+
+  // M16.6.1：SPIKE 概率上限（防反馈环路震荡）
+  const SPIKE_CAP = 0.45;
+
+  let spikeProbability: number;
+
+  if (revealCadenceBias === 'SPIKE_UP') {
+    // SPIKE_UP: 提高 SPIKE 概率（约 40%）
+    spikeProbability = 0.4;
+  } else if (revealCadenceBias === 'SPIKE_DOWN') {
+    // SPIKE_DOWN: 降低 SPIKE 概率（约 10%）
+    spikeProbability = 0.1;
+  } else {
+    // NORMAL bias: 标准 SPIKE 概率（约 20%）
+    spikeProbability = 0.2;
+  }
+
+  // M16.6.1：应用 SPIKE 概率上限
+  const finalProbability = Math.min(spikeProbability, SPIKE_CAP);
+  const isSpike = Math.random() < finalProbability;
+
+  console.log(`[StructurePlanner] EP${episodeIndex} (${revealCadenceBias} bias) -> ${isSpike ? 'SPIKE' : 'NORMAL'} (${(finalProbability * 100).toFixed(1)}% chance${spikeProbability > SPIKE_CAP ? ', capped at ' + (SPIKE_CAP * 100).toFixed(1) + '%' : ''})`);
+
+  return isSpike ? 'SPIKE' : 'NORMAL';
 }
 

@@ -26,3 +26,4 @@ const nodeLocalStorage = {
 // 导出统一的存储接口
 export const storage = isNodeEnv ? nodeLocalStorage : localStorage;
 
+

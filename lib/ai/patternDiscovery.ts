@@ -434,3 +434,4 @@ export function formatInsightsAsMarkdown(insights: string[]): string {
   return insights.map(insight => `- ${insight}`).join('\n');
 }
 
+

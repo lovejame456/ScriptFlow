@@ -37,3 +37,4 @@ export const cultivationFantasyTemplate: ConflictTemplate = {
 };
 
 
+

@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "generatedAt": "2026-01-02T21:59:25.811Z",
+  "buckets": {
+    "unknown__MID": {
+      "bias": {
+        "revealCadenceBiasPrior": "SPIKE_UP",
+        "retryBudgetPrior": 3,
+        "pressureMultiplierPrior": 0.9,
+        "confidence": 0.2,
+        "rationale": [
+          "样本数: 2，置信度: 0.20",
+          "平均健康评分: 57.5 < 60，或错误率: 100.0% > 20%，建议提高 SPIKE 频率以增强 Reveal 质量",
+          "平均警告数: 3.5 >= 3，建议降低压力以减少警告积累",
+          "样本数较少 (< 5)，置信度降低至 0.20，建议谨慎使用此偏置",
+          "统计: 平均分 57.5, P95 重试 1.00, 错误率 100.0%, SPIKE 占比 0.0%"
+        ]
+      },
+      "stats": {
+        "sampleCount": 2,
+        "meanScore": 57.5,
+        "p95Retries": 1,
+        "errorRate": 1,
+        "spikeRatio": 0,
+        "avgWarnings": 3.5,
+        "avgErrors": 1.5
+      }
+    }
+  }
+}

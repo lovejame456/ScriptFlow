@@ -1,30 +1,111 @@
-name: CI
+name: M16.4.2 Structure-First CI with Regression Gate
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 jobs:
   m16-structure-tests:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run M16 Structure Tests
-        env:
-          VITE_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      - name: Run M16.4.2 metrics test
+        run: npm run test:m16.4
+
+      - name: Upload M16 Metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: m16-metrics
+          path: reports/*.json
+          if-no-files-found: error
+        if: always()
+
+  m16-regression-gate:
+    needs: m16-structure-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download current metrics
+        uses: actions/download-artifact@v4
+        with:
+          name: m16-metrics
+          path: current
+
+      - name: Run regression diff
         run: |
-          npm run test:m16
-          npm run test:m16.3
+          npm run metrics:diff -- baseline/m16_metrics_baseline.json current/*.json
+
+      - name: Upload regression report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m16-regression-report
+          path: current/*.json
+
+  m16-gold-promotion:
+    needs: m16-regression-gate
+    # M16.7: 只在 main 分支 push 时允许晋升 Gold Baseline
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download current metrics
+        uses: actions/download-artifact@v4
+        with:
+          name: m16-metrics
+          path: current
+
+      - name: Run Gold Baseline Promotion
+        run: |
+          # 找到 metrics 文件并运行 promotion
+          METRICS_FILE=$(find current -name "*.json" -type f | head -1)
+          if [ -z "$METRICS_FILE" ]; then
+            echo "No metrics file found"
+            exit 1
+          fi
+          echo "Running Gold Promotion for: $METRICS_FILE"
+          npm run gold:promote -- "$METRICS_FILE"
+
+      - name: Upload Gold Baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: m16-gold-baseline
+          path: baseline/gold/m16_metrics_gold.json
+          if-no-files-found: ignore
+        if: always()
 

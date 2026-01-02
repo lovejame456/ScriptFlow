@@ -38,6 +38,10 @@ import { assembleContent } from './assembler';
 import { appendRevealToHistory, RevealHistory } from './revealScheduler';
 // M16.3: 导入 Reveal 质量信号检查
 import { checkRevealQualitySignals, RevealQualitySignal } from './alignerRunner';
+// M16.4: 导入 metrics
+import { metrics } from '../metrics/runMetrics';
+// M16.5: 导入 AdaptiveParams
+import { AdaptiveParams } from '../../types';
 
 /**
  * M16.3: 根据重试次数调整 slots（收紧指令）
@@ -1368,6 +1372,11 @@ export async function generateEpisodeFast({
 
   const pacingContext = getPacingContext(project, episodeIndex);
 
+  // M16.5: 获取自适应参数
+  const batch = batchRepo.get(projectId);
+  const adaptiveParams: AdaptiveParams | undefined = batch?.adaptiveParams;
+  console.log(`[generateEpisodeFast] M16.5: Adaptive params:`, adaptiveParams);
+
   // M16 Step 1: 生成 StructureContract（结构先于内容）
   console.log(`[generateEpisodeFast] M16 Step 1: Generating StructureContract`);
   let structureContract: StructureContract;
@@ -1375,7 +1384,8 @@ export async function generateEpisodeFast({
     structureContract = await generateStructureContract({
       episodeIndex,
       project,
-      outline
+      outline,
+      adaptiveParams  // M16.5: 传递自适应参数
     });
   } catch (error: any) {
     console.error(`[generateEpisodeFast] StructureContract generation failed:`, error);
@@ -1383,6 +1393,13 @@ export async function generateEpisodeFast({
     throw new Error(
       `[generateEpisodeFast] StructureContract generation failed for EP${episodeIndex}: ${error.message || String(error)}`
     );
+  }
+
+  // M16.4: 记录 contract 到 metrics
+  try {
+    metrics.recordContract(episodeIndex, structureContract);
+  } catch (err) {
+    console.warn(`[generateEpisodeFast] Failed to record contract metrics:`, err);
   }
 
   // M16 Step 2: 构建 SlotWriteInput
@@ -1428,8 +1445,9 @@ export async function generateEpisodeFast({
     }
   }
 
-  // M16.3: 结构重试闭环配置
-  const MAX_SLOT_RETRIES = 3;
+  // M16.5: 结构重试闭环配置（使用自适应参数）
+  const MAX_SLOT_RETRIES = adaptiveParams?.maxSlotRetries ?? 3;
+  console.log(`[generateEpisodeFast] M16.5: MAX_SLOT_RETRIES = ${MAX_SLOT_RETRIES} (adaptive: ${adaptiveParams?.maxSlotRetries ?? 'N/A'})`);
 
   // M16 Step 4: 调用 SlotWriter（slot 先于段落）
   console.log(`[generateEpisodeFast] M16 Step 4: Calling SlotWriter`);
@@ -1488,6 +1506,15 @@ export async function generateEpisodeFast({
 
       // 验证通过，跳出重试循环
       console.log(`[generateEpisodeFast] Slot validation passed on attempt ${attempt}`);
+
+      // M16.4: 记录重试次数（attempt - 1 因为从 1 开始）
+      try {
+        metrics.recordRetry(episodeIndex, attempt - 1);
+        metrics.recordSlotValidation(episodeIndex, validation.valid, validation.errors);
+      } catch (err) {
+        console.warn(`[generateEpisodeFast] Failed to record validation metrics:`, err);
+      }
+
       break;
 
     } catch (error: any) {
@@ -1600,6 +1627,16 @@ export async function generateEpisodeFast({
   });
 
   console.log(`[generateEpisodeFast] Reveal quality signals for EP${episodeIndex}:`, JSON.stringify(revealQualitySignal));
+
+  // M16.4: 记录 post signals 到 metrics
+  try {
+    metrics.recordPostSignals(episodeIndex, {
+      revealIsConcrete: revealQualitySignal.revealIsConcrete,
+      revealHasConsequence: revealQualitySignal.revealHasConsequence
+    });
+  } catch (err) {
+    console.warn(`[generateEpisodeFast] Failed to record postSignals metrics:`, err);
+  }
 
   // 保存 Reveal 质量信号到 episode（扩展 metadata）
   await episodeRepo.save(projectId, episodeIndex, {

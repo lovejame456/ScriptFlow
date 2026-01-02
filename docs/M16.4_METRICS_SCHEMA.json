@@ -1,0 +1,64 @@
+{
+  "runId": "string",
+  "projectId": "string",
+  "timestamp": "string",
+  "range": { "fromEpisode": 1, "toEpisode": 6 },
+  "episodes": [
+    {
+      "episode": 2,
+      "contract": {
+        "reveal": {
+          "required": true,
+          "type": "INFO",
+          "scope": "PROTAGONIST",
+          "cadenceTag": "NORMAL",
+          "noRepeatKey": "reveal_xxx"
+        },
+        "pressure": {
+          "vector": "RESOURCE",
+          "hint": "string"
+        }
+      },
+      "writer": {
+        "slotRetries": 0,
+        "slotValidation": {
+          "passed": true,
+          "errors": []
+        }
+      },
+      "postSignals": {
+        "revealIsConcrete": true,
+        "revealHasConsequence": true
+      }
+    }
+  ],
+  "aggregates": {
+    "reveal": {
+      "typeCounts": { "FACT": 0, "INFO": 0, "RELATION": 0, "IDENTITY": 0 },
+      "typeTransitionsOk": true,
+      "duplicatePrevented": 0,
+      "cadence": { "NORMAL": 0, "SPIKE": 0 }
+    },
+    "pressure": {
+      "vectorCounts": {
+        "POWER": 0,
+        "RESOURCE": 0,
+        "STATUS": 0,
+        "RELATION": 0,
+        "LIFE_THREAT": 0
+      },
+      "maxConsecutiveDrop": 0
+    },
+    "retry": {
+      "episodesWithRetry": 0,
+      "avgRetries": 0,
+      "p95Retries": 0
+    },
+    "health": {
+      "warnings": [],
+      "errors": [],
+      "score": 100
+    }
+  }
+}
+
