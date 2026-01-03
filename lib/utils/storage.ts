@@ -9,21 +9,25 @@ const isNodeEnv = typeof process !== 'undefined' && process.versions && process.
 const inMemoryStorage: Record<string, string> = {};
 
 const nodeLocalStorage = {
-  getItem: (key: string): string | null => inMemoryStorage[key] || null,
-  setItem: (key: string, value: string): void => {
+  getItem: (key: string) => inMemoryStorage[key] || null,
+  setItem: (key: string, value: string) => {
     inMemoryStorage[key] = value;
   },
-  removeItem: (key: string): void => {
+  removeItem: (key: string) => {
     delete inMemoryStorage[key];
   },
-  clear: (): void => {
+  clear: () => {
     Object.keys(inMemoryStorage).forEach(key => {
       delete inMemoryStorage[key];
     });
   },
 };
 
+// 在 Node.js 环境挂载模拟 localStorage
+if (isNodeEnv && !globalThis.localStorage) {
+  (globalThis as any).localStorage = nodeLocalStorage;
+}
+
 // 导出统一的存储接口
-export const storage = isNodeEnv ? nodeLocalStorage : localStorage;
-
-
+export const storage = isNodeEnv ? nodeLocalStorage : globalThis.localStorage;
+export const localStorage = isNodeEnv ? nodeLocalStorage : globalThis.localStorage;

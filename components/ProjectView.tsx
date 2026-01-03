@@ -82,6 +82,16 @@ const ProjectView: React.FC<ProjectViewProps> = ({ project, onViewChange }) => {
                       </div>
                     )}
 
+                    {/* Run Summary */}
+                    {project.summaryText && (
+                      <div className="mb-6 mt-8 pt-6 border-t border-white/10">
+                        <div className="text-xs uppercase font-bold text-primary mb-4 tracking-wider">运行报告</div>
+                        <pre className="glass-card rounded-xl p-6 text-xs text-left overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed text-emerald-400 bg-black/30 border border-white/5">
+                          {project.summaryText}
+                        </pre>
+                      </div>
+                    )}
+
                     {/* Additional Info Grid */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-white/5">
                         <div>

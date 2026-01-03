@@ -19,8 +19,12 @@ export enum EpisodeStatus {
   COMPLETED = '已通过商业校验',
   FAILED = '失败',
   PASS = 'PASS',
-  MANUAL_OVERRIDE = '人工接管'
+  MANUAL_OVERRIDE = '人工接管',
+  DEGRADED = '降级完成（结构异常已自动处理）'
 }
+
+// S2: 输出模式类型（用于切换小说叙述体 vs 商业短剧脚本体）
+export type OutputMode = 'NARRATIVE' | 'COMMERCIAL_SCRIPT';
 
 export type GenreType = string;
 
@@ -702,6 +706,7 @@ export interface Project {
   narrativeState?: NarrativeState;  // M12: 叙事状态机 (可选)
   episodeFactsHistory?: EpisodeFactsRecord[];  // M12.3: 连续性事实历史 (可选)
   revealHistory?: RevealHistory[];  // M16.3: Reveal 历史记录 (可选)
+  summaryText?: string;  // 产品可读摘要 (可选)
 }
 
 export interface ProjectSeed {
@@ -838,6 +843,7 @@ export interface BatchState {
   currentEpisode: number;
   completed: number[];
   failed: number[];
+  degraded?: number[];  // P1: 降级集列表
   hardFailCount: number;
   lastError?: string;
   updatedAt: number;
@@ -922,4 +928,163 @@ export interface EnrichOutlineTask {
   completedAt?: number;
   error?: string;
   updatedAt: number;
+}
+
+// --- P3: Guidance & Creative Advisor (质量引导与创作协作) ---
+
+/**
+ * 失败模式类型
+ */
+export type FailureMode = 'REVEAL_VAGUE' | 'MOTIVATION_WEAK' | 'CONFLICT_STALLED' | 'UNKNOWN';
+
+/**
+ * 项目失败分析结果
+ */
+export interface ProjectFailureAnalysis {
+  projectId: string;
+  totalEpisodes: number;
+  degradedEpisodes: number;
+  clusters: {
+    revealVague: number;      // 信息揭示不具体
+    motivationWeak: number;   // 动机不足
+    conflictStalled: number;  // 冲突未推进
+    unknown: number;          // 其他
+  };
+  primaryMode: FailureMode;   // 主要失败模式
+  humanSummary: string;       // 一句话总结
+  recommendations: string[];    // 具体建议
+  timestamp: string;
+}
+
+/**
+ * 创作方向建议
+ */
+export interface EpisodeAdvice {
+  projectId: string;
+  currentTotalEpisodes: number;
+  recommendedEpisodes: number;
+  reason: string;
+  confidence: 'high' | 'medium' | 'low';
+  degradedDensity: number;     // 降级密度（降级集数 / 总集数）
+  timestamp: string;
+}
+
+// --- P4: Project Intelligence (项目级创作智能进化层) ---
+
+/**
+ * 项目失败画像
+ * 记录项目的失败模式分布、趋势和阶段偏移
+ */
+export interface ProjectFailureProfile {
+  projectId: string;
+  dominantPatterns?: Array<{
+    type: FailureMode;
+    ratio: number;              // 占比
+    trend: 'up' | 'down' | 'stable';
+  }>;
+  episodePhaseBias?: {
+    early: number;              // EP1–EP5
+    mid: number;               // EP6–EP30
+    late: number;              // EP30+
+  };
+  lastUpdatedAt?: string;
+}
+
+/**
+ * 指令效果记录
+ * 记录单个指令应用前后的降级率变化
+ */
+export interface InstructionImpact {
+  instructionId: string;
+  appliedAtEpisode: number;
+  before: {
+    degradedRatio: number;      // 应用前的降级率
+  };
+  after: {
+    degradedRatio: number;      // 应用后的降级率
+  };
+  delta: number;               // 变化量（负数表示改善）
+  timestamp: string;
+}
+
+/**
+ * 指令效果历史
+ * 存储一个项目的所有指令效果记录
+ */
+export interface InstructionImpactHistory {
+  projectId: string;
+  impacts: InstructionImpact[];
+}
+
+/**
+ * 系统指令建议
+ * 智能系统根据项目失败画像和历史效果生成的推荐
+ */
+export interface SystemInstructionSuggestion {
+  instructionId: string;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  timestamp?: string;
+}
+
+// --- P5-Lite: Project DNA (长期记忆） ---
+
+/**
+ * Project DNA - 项目长期记忆（P5-Lite）
+ * 记录项目的失败演化、指令效果和创作决策历史
+ */
+export interface ProjectDNA {
+  projectId: string;
+  failureEvolution: FailureSnapshot[];
+  instructionImpactHistory: InstructionImpactRecord[];
+  creativeDecisions: CreativeDecision[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Failure Snapshot - 失败快照
+ * 记录某个时间点的失败状态
+ */
+export interface FailureSnapshot {
+  timestamp: string;
+  episodeIndex: number;
+  failureProfile: ProjectFailureProfile;
+  degradedRatio: number;
+}
+
+/**
+ * Instruction Impact Record - 指令效果记录
+ * 记录单个指令应用前后的降级率变化
+ */
+export interface InstructionImpactRecord {
+  timestamp: string;
+  instructionId: string;
+  appliedAtEpisode: number;
+  beforeRatio: number;
+  afterRatio: number;
+  delta: number;
+  effectiveness: 'effective' | 'neutral' | 'negative';
+}
+
+/**
+ * Creative Decision - 创作决策
+ * 记录用户对项目的创作方向调整
+ */
+export interface CreativeDecision {
+  timestamp: string;
+  decisionType: 'genre_adjust' | 'pacing_change' | 'character_edit' | 'manual_intervention';
+  description: string;
+  episodeRange?: string;
+}
+
+/**
+ * Stability Prediction - 稳定性预测（P5-Lite）
+ * 内部预测未来 10 集的稳定性
+ */
+export interface StabilityPrediction {
+  next10EpisodesRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+  expectedDegradedRate: number;
+  confidence: number;
+  notes: string[];
 }

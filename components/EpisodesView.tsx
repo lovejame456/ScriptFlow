@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Project, EpisodeStatus, GenerationTask, BatchState } from '../types';
-import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Filter, LayoutGrid } from 'lucide-react';
+import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Filter, LayoutGrid, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import { restoreFromTask } from '../lib/ai/restoreHelper';
+import { calculateDegradedDensity, generateWarningText } from '../lib/ai/calculateDegradedDensity';
 
 interface EpisodesViewProps {
   project: Project;
@@ -116,6 +117,7 @@ const EpisodesView: React.FC<EpisodesViewProps> = ({ project, onRefresh }) => {
 
   const [startInput, setStartInput] = useState('1');
   const [endInput, setEndInput] = useState(String(refreshedProject.totalEpisodes));
+  const [regeneratingEpisode, setRegeneratingEpisode] = useState<number | null>(null);
 
   const stats = {
     total: refreshedProject.totalEpisodes,
@@ -123,7 +125,12 @@ const EpisodesView: React.FC<EpisodesViewProps> = ({ project, onRefresh }) => {
     draft: (refreshedProject.episodes || []).filter(e => e.status === EpisodeStatus.DRAFT).length,
     failed: (refreshedProject.episodes || []).filter(e => e.status === EpisodeStatus.FAILED).length,
     generating: (refreshedProject.episodes || []).filter(e => e.status === EpisodeStatus.GENERATING).length,
+    degraded: (refreshedProject.episodes || []).filter(e => e.status === EpisodeStatus.DEGRADED).length,
   };
+
+  // P2: 计算降级密度
+  const degradedDensity = calculateDegradedDensity(refreshedProject.episodes || []);
+  const warningText = generateWarningText(degradedDensity);
 
   // Determine which controls to show based on episode generation status
   const hasGenerating = stats.generating > 0;
@@ -146,6 +153,44 @@ const EpisodesView: React.FC<EpisodesViewProps> = ({ project, onRefresh }) => {
       alert(`已开始生成第 ${start}-${end} 集，请在生产工作台查看进度`);
     } catch (err: any) {
       alert(`启动失败: ${err.message}`);
+    }
+  };
+
+  const handleRegenerateDegraded = async (episodeIndex: number) => {
+    if (regeneratingEpisode !== null) {
+      alert('已有剧集正在重新生成，请等待完成');
+      return;
+    }
+
+    try {
+      setRegeneratingEpisode(episodeIndex);
+
+      // 更新本地状态为 GENERATING
+      setRefreshedProject(prev => {
+        const newEpisodes = prev.episodes.map(ep =>
+          ep.id === episodeIndex
+            ? { ...ep, status: EpisodeStatus.GENERATING, humanSummary: '正在重新生成（增强 Reveal 约束）…' }
+            : ep
+        );
+        return { ...prev, episodes: newEpisodes };
+      });
+
+      // 调用 API
+      const result = await api.episode.regenerateDegraded(refreshedProject.id, episodeIndex);
+
+      // 刷新项目数据
+      await refreshProjectData();
+
+      // 提示用户
+      const statusText = result.status === EpisodeStatus.COMPLETED ? '已完成' : '已生成（待校验）';
+      alert(`EP${episodeIndex} 重新生成${statusText}`);
+
+    } catch (err: any) {
+      alert(`重新生成失败: ${err.message}`);
+      // 刷新项目数据以获取最新状态
+      await refreshProjectData();
+    } finally {
+      setRegeneratingEpisode(null);
     }
   };
 
@@ -238,6 +283,44 @@ const EpisodesView: React.FC<EpisodesViewProps> = ({ project, onRefresh }) => {
         </div>
       )}
 
+      {/* P2: Degraded Density Warning (Conditional) */}
+      {warningText && (
+        <div className={`rounded-2xl p-6 animate-in slide-in-from-top-2 shadow-[0_0_30px_rgba(245,158,11,0.15)] border ${
+          degradedDensity.warningLevel === 'high'
+          ? 'bg-red-500/10 border-red-500/30'
+          : degradedDensity.warningLevel === 'medium'
+          ? 'bg-orange-500/10 border-orange-500/30'
+          : 'bg-amber-500/10 border-amber-500/30'
+        }`}>
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <AlertTriangle
+                size={20}
+                className={
+                  degradedDensity.warningLevel === 'high'
+                  ? 'text-red-500 animate-pulse'
+                  : degradedDensity.warningLevel === 'medium'
+                  ? 'text-orange-500'
+                  : 'text-amber-500'
+                }
+              />
+              <div>
+                <h3 className={`font-bold text-sm uppercase tracking-wider mb-1 ${
+                  degradedDensity.warningLevel === 'high'
+                  ? 'text-red-500'
+                  : degradedDensity.warningLevel === 'medium'
+                  ? 'text-orange-500'
+                  : 'text-amber-500'
+                }`}>
+                  降级密度警告
+                </h3>
+                <p className="text-textMuted text-xs">{warningText}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Failure Queue (Conditional) */}
       {(stats.failed > 0 || stats.draft > 0) && (
           <div className="bg-danger/5 border border-danger/20 rounded-2xl p-6 animate-in slide-in-from-top-2 shadow-[0_0_30px_rgba(244,63,94,0.1)]">
@@ -268,6 +351,58 @@ const EpisodesView: React.FC<EpisodesViewProps> = ({ project, onRefresh }) => {
                              </div>
                         </div>
                         <button className="p-2 hover:bg-danger/20 rounded-lg text-danger transition-colors"><RotateCcw size={14}/></button>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+      )}
+
+      {/* Degraded Queue (P2: 降级集区块） */}
+      {stats.degraded > 0 && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-6 animate-in slide-in-from-top-2 shadow-[0_0_30px_rgba(245,158,11,0.15)]">
+            <div className="flex justify-between items-center mb-4">
+                <h3 className="text-amber-500 font-bold flex items-center gap-2 text-sm uppercase tracking-wider">
+                    <AlertTriangle size={16} /> 降级剧集（已自动降级并继续）
+                </h3>
+                <button className="text-xs bg-amber-500 text-white px-4 py-2 rounded-lg hover:bg-amber-600 font-bold shadow-lg shadow-amber-500/20 transition-all active:scale-95">全部重新生成</button>
+            </div>
+            <div className="space-y-2">
+                {(refreshedProject.episodes || []).filter(e => e.status === EpisodeStatus.DEGRADED).map(ep => {
+                  const errorMessage = ep.humanSummary || '结构校验失败，已自动降级';
+
+                  return (
+                    <div key={ep.id} className="flex justify-between items-center bg-black/40 p-3 rounded-lg border border-amber-500/20 hover:border-amber-500/40 transition-colors group">
+                        <div className="flex items-center gap-3">
+                             <span className="text-xs font-mono font-bold px-2 py-1 rounded text-amber-500 bg-amber-500/10">EP {String(ep.id).padStart(2, '0')}</span>
+                             <div className="flex flex-col">
+                                <span className="text-xs text-textMuted group-hover:text-white transition-colors" title={errorMessage}>{errorMessage}</span>
+                                <span className="text-[10px] text-amber-400/80 mt-0.5">
+                                    Batch 已继续，您可选择重新生成或接受当前质量
+                                </span>
+                             </div>
+                        </div>
+                        <button
+                            onClick={() => handleRegenerateDegraded(ep.id)}
+                            disabled={regeneratingEpisode === ep.id}
+                            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all active:scale-95 ${
+                                regeneratingEpisode === ep.id
+                                ? 'bg-amber-500/50 text-white cursor-not-allowed'
+                                : 'bg-amber-500 hover:bg-amber-600 text-white shadow-lg shadow-amber-500/20'
+                            }`}
+                        >
+                            {regeneratingEpisode === ep.id ? (
+                                <>
+                                    <RefreshCw size={12} className="animate-spin" />
+                                    重新生成中…
+                                </>
+                            ) : (
+                                <>
+                                    <RefreshCw size={12} />
+                                    重新生成
+                                </>
+                            )}
+                        </button>
                     </div>
                   );
                 })}

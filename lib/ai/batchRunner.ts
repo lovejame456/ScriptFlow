@@ -18,9 +18,13 @@ import {
 import {
   MetaPolicy,
   ProjectProfile,
-  MetaPolicyBias,
-  bucketByProfile
+  MetaPolicyBias
 } from '../metrics/metaTypes';
+import { bucketByProfile } from '../metrics/metaAggregator';
+// P3.1: 导入失败聚类分析
+import { analyzeProjectFailures } from '../guidance/failureCluster';
+// P3.3: 导入创作顾问
+import { generateEpisodeAdvice, shouldGenerateAdviceRealtime } from '../guidance/creativeAdvisor';
 
 export async function startBatch(args: {
   projectId: string;
@@ -167,6 +171,62 @@ async function runLoop(projectId: string): Promise<void> {
       }
 
       batchRepo.save(batch);
+
+      // P3.1: Batch 完成或暂停时，分析失败模式
+      try {
+        console.log(`[BatchRunner] P3.1: Running failure analysis...`);
+        const failureAnalysis = await analyzeProjectFailures(projectId);
+        await projectRepo.saveFailureAnalysis(projectId, failureAnalysis);
+        console.log(`[BatchRunner] P3.1: Failure analysis saved:`, failureAnalysis.humanSummary);
+      } catch (err) {
+        console.warn(`[BatchRunner] P3.1: Failed to run failure analysis:`, err);
+      }
+
+      // P3.3: Phase 暂停或完成时，生成创作建议
+      if (batch.status === 'PAUSED' || batch.status === 'DONE') {
+        try {
+          console.log(`[BatchRunner] P3.3: Generating episode advice...`);
+          const episodeAdvice = await generateEpisodeAdvice(projectId, project);
+          
+          if (episodeAdvice) {
+            await projectRepo.saveEpisodeAdvice(projectId, episodeAdvice);
+            console.log(`[BatchRunner] P3.3: Episode advice saved:`, episodeAdvice.reason);
+          }
+        } catch (err) {
+          console.warn(`[BatchRunner] P3.3: Failed to generate episode advice:`, err);
+        }
+      }
+
+      // P5-Lite: 记录 Failure Snapshot（不影响现有逻辑）
+      try {
+        // 确保 Project DNA 已初始化（即使没有失败画像）
+        const { getOrInitDNA, recordFailureSnapshot } = await import('../business/projectDNA');
+        await getOrInitDNA(projectId);
+
+        const failureProfile = await projectRepo.getFailureProfile(projectId);
+        if (failureProfile) {
+          const degradedRatio = batch.degraded?.length / (batch.endEpisode - batch.startEpisode + 1) || 0;
+          await recordFailureSnapshot(projectId, failureProfile, degradedRatio);
+          console.log(`[BatchRunner] P5-Lite: Failure snapshot recorded`);
+        }
+      } catch (err) {
+        console.warn(`[BatchRunner] P5-Lite: Failed to record failure snapshot:`, err);
+      }
+
+      // P5-Lite: 内部稳定性预测（仅用于日志，不影响 UI）
+      try {
+        const { analyzeStability } = await import('../business/predictabilityEngine');
+        const prediction = await analyzeStability(projectId);
+        console.log(`[BatchRunner] P5-Lite Stability Prediction:`, {
+          risk: prediction.next10EpisodesRisk,
+          expectedDegradedRate: (prediction.expectedDegradedRate * 100).toFixed(1) + '%',
+          confidence: (prediction.confidence * 100).toFixed(1) + '%',
+          notes: prediction.notes.slice(0, 2)  // 只打印前 2 条说明
+        });
+      } catch (err) {
+        console.warn(`[BatchRunner] P5-Lite: Failed to analyze stability:`, err);
+      }
+
       return;
     }
 
@@ -194,6 +254,29 @@ async function runLoop(projectId: string): Promise<void> {
       // 使用 generateEpisodeFast，立即返回 DRAFT（包含后台增强任务）
       const result = await generateEpisodeFast({ projectId, episodeIndex });
 
+      // === P1: DEGRADED 状态处理 ===
+      // 当剧集结构失败后自动降级时，状态为 DEGRADED
+      // 不阻塞 Batch，继续生成下一集
+      if (result.status === EpisodeStatus.DEGRADED) {
+        console.log(`[BatchRunner] EP${episodeIndex} is DEGRADED, adding to degraded list and continuing`);
+
+        // 将降级集加入 degraded 数组
+        if (!batch.degraded) {
+          batch.degraded = [];
+        }
+        batch.degraded.push(episodeIndex);
+        batch.degraded = [...new Set(batch.degraded)];
+
+        // 更新健康状态
+        batch.health = calculateHealth(batch);
+
+        // 继续下一集（不暂停 Batch）
+        batch.currentEpisode += 1;
+        batchRepo.save(batch);
+        console.log(`[BatchRunner] Continuing batch after DEGRADED EP${episodeIndex}`);
+        continue;
+      }
+
       // === P0 新规则：DRAFT 状态不阻塞 Batch ===
       //
       // generateEpisodeFast 返回的是 DRAFT 状态，但这是正常的：
@@ -217,6 +300,22 @@ async function runLoop(projectId: string): Promise<void> {
         // ✅ 新规则：DRAFT 不再视为失败，Batch 直接继续
         batch.currentEpisode += 1;
         batchRepo.save(batch);
+        
+        // P3.3: 实时监控降级密度（每集生成完成后检查）
+        try {
+          const shouldGenerateRealtime = await shouldGenerateAdviceRealtime(projectId);
+          if (shouldGenerateRealtime) {
+            console.log(`[BatchRunner] P3.3: Realtime degraded density threshold reached, generating advice...`);
+            const episodeAdvice = await generateEpisodeAdvice(projectId, project);
+            if (episodeAdvice) {
+              await projectRepo.saveEpisodeAdvice(projectId, episodeAdvice);
+              console.log(`[BatchRunner] P3.3: Realtime episode advice saved:`, episodeAdvice.reason);
+            }
+          }
+        } catch (err) {
+          console.warn(`[BatchRunner] P3.3: Failed to generate realtime advice:`, err);
+        }
+        
         continue;
       }
 
@@ -244,35 +343,6 @@ async function runLoop(projectId: string): Promise<void> {
       console.log(`[BatchRunner] EP${episodeIndex} completed successfully`);
 
     } catch (err: any) {
-      // === M16: 结构失败处理（零容忍） ===
-      const isStructureFail = isStructureFailError(err);
-      
-      if (isStructureFail) {
-        console.error(`[BatchRunner] EP${episodeIndex} structure failed (M16):`, err);
-        
-        // 标记为 FAILED
-        batch.failed.push(episodeIndex);
-        batch.failed = [...new Set(batch.failed)];
-        batch.hardFailCount += 1;
-        batch.lastError = err.message || String(err);
-        
-        // 将失败集的状态标记为 FAILED
-        await episodeRepo.save(projectId, episodeIndex, {
-          status: EpisodeStatus.FAILED,
-          humanSummary: `结构校验失败（M16）：${err.message || String(err)}。这是硬约束，必须修复后重试。`
-        });
-        
-        // 计算健康状态
-        batch.health = calculateHealth(batch);
-        
-        // M16 铁律：结构失败直接终止 Batch（不跳过继续）
-        batch.status = 'PAUSED';
-        batchRepo.save(batch);
-        
-        console.log(`[BatchRunner] Batch paused due to structure failure (M16) for EP${episodeIndex}`);
-        return;
-      }
-      
       // === 状态驱动：系统级错误标记为 FAILED ===
       //
       // FAILED 仅用于系统级错误（网络故障、API 超时、未知异常等），
@@ -334,18 +404,10 @@ async function runLoop(projectId: string): Promise<void> {
         }
       }
 
-      // Check hardFailCount threshold（仅适用于 EP2+）
-      if (batch.hardFailCount >= 2) {
-        batch.status = 'PAUSED';
-        batchRepo.save(batch);
-        console.log(`[BatchRunner] Batch paused due to ${batch.hardFailCount} consecutive failures`);
-        return;
-      } else {
-        // Allow skipping failed episode and continue
-        batch.currentEpisode += 1;
-        batchRepo.save(batch);
-        console.log(`[BatchRunner] Skipping failed EP${episodeIndex}, continuing to EP${batch.currentEpisode}`);
-      }
+      // P1 修复：永不因失败而暂停，总是继续下一集
+      batch.currentEpisode += 1;
+      batchRepo.save(batch);
+      console.log(`[BatchRunner] Skipping failed EP${episodeIndex}, continuing to EP${batch.currentEpisode}`);
     }
 
     // Small delay to allow UI updates

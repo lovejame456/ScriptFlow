@@ -1,4 +1,4 @@
-import { Project, ProjectSeed, ProjectBible, EpisodeOutline, Episode, StoryMemory, EpisodeStatus, NarrativeState } from '../../types';
+import { Project, ProjectSeed, ProjectBible, EpisodeOutline, Episode, StoryMemory, EpisodeStatus, NarrativeState, ProjectFailureAnalysis, EpisodeAdvice, ProjectFailureProfile, InstructionImpactHistory, SystemInstructionSuggestion } from '../../types';
 import { storage } from '../utils/storage';
 
 const STORAGE_KEY = 'scriptflow_projects';
@@ -202,6 +202,20 @@ class ProjectRepo {
     this.saveProjects(projects);
   }
 
+  // 产品摘要保存方法
+  async saveSummary(id: string, summaryText: string): Promise<void> {
+    await delay(100);
+    const projects = this.loadProjects();
+    const index = projects.findIndex(p => p.id === id);
+    if (index === -1) throw new Error('Project not found');
+
+    projects[index].summaryText = summaryText;
+    projects[index].updatedAt = new Date().toISOString();
+
+    this.saveProjects(projects);
+    console.log(`[projectRepo] Summary saved for project ${id}`);
+  }
+
   async delete(id: string) {
     await delay(100);
     const projects = this.loadProjects();
@@ -210,6 +224,130 @@ class ProjectRepo {
       throw new Error('Project not found');
     }
     this.saveProjects(filtered);
+  }
+
+  // --- P3.1: 失败分析存储 ---
+  
+  async saveFailureAnalysis(id: string, analysis: ProjectFailureAnalysis): Promise<void> {
+    await delay(100);
+    const key = `scriptflow_failure_analysis_${id}`;
+    storage.setItem(key, JSON.stringify(analysis));
+    console.log(`[projectRepo] Failure analysis saved for project ${id}`);
+  }
+
+  async getFailureAnalysis(id: string): Promise<ProjectFailureAnalysis | null> {
+    await delay(50);
+    const key = `scriptflow_failure_analysis_${id}`;
+    const data = storage.getItem(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[projectRepo] Failed to parse failure analysis:', e);
+      return null;
+    }
+  }
+
+  // --- P3.3: 创作建议存储 ---
+  
+  async saveEpisodeAdvice(id: string, advice: EpisodeAdvice): Promise<void> {
+    await delay(100);
+    const key = `scriptflow_episode_advice_${id}`;
+    storage.setItem(key, JSON.stringify(advice));
+    console.log(`[projectRepo] Episode advice saved for project ${id}`);
+  }
+
+  async getEpisodeAdvice(id: string): Promise<EpisodeAdvice | null> {
+    await delay(50);
+    const key = `scriptflow_episode_advice_${id}`;
+    const data = storage.getItem(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[projectRepo] Failed to parse episode advice:', e);
+      return null;
+    }
+  }
+
+  async dismissEpisodeAdvice(id: string): Promise<void> {
+    await delay(50);
+    const key = `scriptflow_episode_advice_${id}`;
+    storage.removeItem(key);
+    console.log(`[projectRepo] Episode advice dismissed for project ${id}`);
+  }
+
+  // --- P4.1: Project Failure Profile Storage ---
+
+  async saveFailureProfile(id: string, profile: ProjectFailureProfile): Promise<void> {
+    await delay(100);
+    const key = `scriptflow_failure_profile_${id}`;
+    storage.setItem(key, JSON.stringify(profile));
+    console.log(`[projectRepo] Failure profile saved for project ${id}`);
+  }
+
+  async getFailureProfile(id: string): Promise<ProjectFailureProfile | null> {
+    await delay(50);
+    const key = `scriptflow_failure_profile_${id}`;
+    const data = storage.getItem(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[projectRepo] Failed to parse failure profile:', e);
+      return null;
+    }
+  }
+
+  // --- P4.2: Instruction Impact History Storage ---
+
+  async saveInstructionImpact(id: string, history: InstructionImpactHistory): Promise<void> {
+    await delay(100);
+    const key = `scriptflow_instruction_impact_${id}`;
+    storage.setItem(key, JSON.stringify(history));
+    console.log(`[projectRepo] Instruction impact history saved for project ${id}`);
+  }
+
+  async getInstructionImpact(id: string): Promise<InstructionImpactHistory | null> {
+    await delay(50);
+    const key = `scriptflow_instruction_impact_${id}`;
+    const data = storage.getItem(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[projectRepo] Failed to parse instruction impact history:', e);
+      return null;
+    }
+  }
+
+  // --- P4.3: System Instruction Suggestion Storage ---
+
+  async saveInstructionSuggestion(id: string, suggestion: SystemInstructionSuggestion): Promise<void> {
+    await delay(100);
+    const key = `scriptflow_instruction_suggestion_${id}`;
+    storage.setItem(key, JSON.stringify(suggestion));
+    console.log(`[projectRepo] Instruction suggestion saved for project ${id}`);
+  }
+
+  async getInstructionSuggestion(id: string): Promise<SystemInstructionSuggestion | null> {
+    await delay(50);
+    const key = `scriptflow_instruction_suggestion_${id}`;
+    const data = storage.getItem(key);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('[projectRepo] Failed to parse instruction suggestion:', e);
+      return null;
+    }
+  }
+
+  async dismissInstructionSuggestion(id: string): Promise<void> {
+    await delay(50);
+    const key = `scriptflow_instruction_suggestion_${id}`;
+    storage.removeItem(key);
+    console.log(`[projectRepo] Instruction suggestion dismissed for project ${id}`);
   }
 }
 

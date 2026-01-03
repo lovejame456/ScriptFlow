@@ -267,6 +267,10 @@ export async function generateStructureContract({
     });
 
     // M16.3: 验证 Reveal summary 是否符合压力绑定要求
+    // PM NOTE (S0 Sprint):
+    // Pressure binding is semantic (pressureVector + hint passed to Writer)
+    // Validation is now lightweight (no keyword matching)
+    // Reveal quality is validated through postSignals in DRAFT phase (revealHasConsequence, conflictProgressed, stateCoherent)
     const bindingValidation = validateRevealAgainstBinding(
       json.mustHave.newReveal.summary,
       antagonistBinding
@@ -374,6 +378,16 @@ export function buildSlotWriteInput(
   if (contract.optional.costPaid) {
     slots.COST_PAID = {
       instruction: `主角为目标付出可感知的代价（如受伤、损失、被羞辱等），让决策更有分量。`,
+      minLength: 0
+    };
+  }
+
+  // S1: 确保必需 slot 存在（防止指令系统破坏结构）
+  // 即使 contract.optional.conflictProgressed 为 false 或未定义，也要创建 CONFLICT_PROGRESS slot
+  // 这是必需 slot，SlotWriter 会严格校验其存在性
+  if (!slots.CONFLICT_PROGRESS) {
+    slots.CONFLICT_PROGRESS = {
+      instruction: `本集围绕"${outline.summary}"推进冲突，体现主角处境变化或外部压力升级。`,
       minLength: 0
     };
   }

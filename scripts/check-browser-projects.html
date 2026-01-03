@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>检查本地存储项目</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #fff;
+        }
+        h1 { color: #818cf8; }
+        .project-card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .project-id {
+            color: #fbbf24;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .project-name {
+            font-size: 18px;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        .project-info {
+            color: #a1a1aa;
+            font-size: 14px;
+        }
+        .no-projects {
+            color: #ef4444;
+            padding: 20px;
+            background: rgba(239,68,68,0.1);
+            border-radius: 8px;
+        }
+        button {
+            background: #818cf8;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #6366f1;
+        }
+    </style>
+</head>
+<body>
+    <h1>📦 本地存储中的项目</h1>
+    <div id="projects-container"></div>
+    
+    <div style="margin-top: 30px;">
+        <button onclick="clearLocalStorage()">🗑️ 清空所有项目</button>
+    </div>
+
+    <script>
+        function loadProjects() {
+            const container = document.getElementById('projects-container');
+            const projectsData = localStorage.getItem('scriptflow_projects');
+            
+            if (!projectsData) {
+                container.innerHTML = '<div class="no-projects">⚠️ 没有找到任何项目</div>';
+                return;
+            }
+            
+            try {
+                const projects = JSON.parse(projectsData);
+                
+                if (projects.length === 0) {
+                    container.innerHTML = '<div class="no-projects">⚠️ 没有找到任何项目</div>';
+                    return;
+                }
+                
+                container.innerHTML = projects.map(p => `
+                    <div class="project-card">
+                        <div class="project-id">ID: ${p.id}</div>
+                        <div class="project-name">${p.name || '未命名项目'}</div>
+                        <div class="project-info">
+                            总集数: ${p.totalEpisodes || 0} | 
+                            已完成: ${(p.episodes || []).filter(e => e.status === 'COMPLETED').length} |
+                            更新时间: ${new Date(p.updatedAt).toLocaleString('zh-CN')}
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (e) {
+                container.innerHTML = `<div class="no-projects">❌ 读取项目失败: ${e.message}</div>`;
+            }
+        }
+        
+        function clearLocalStorage() {
+            if (confirm('确定要删除所有项目吗？此操作无法撤销！')) {
+                localStorage.removeItem('scriptflow_projects');
+                loadProjects();
+            }
+        }
+        
+        // 页面加载时读取项目
+        loadProjects();
+    </script>
+</body>
+</html>
+

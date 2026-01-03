@@ -1,13 +1,22 @@
-import { createProjectSeed, buildBible, generateOutline, generateEpisodeFast, buildSynopsis } from '../lib/ai/episodeFlow';
-import { runBatch, startBatch, pauseBatch, resumeBatch } from '../lib/ai/batchRunner';
-import { projectRepo } from '../lib/store/projectRepo';
-import { storyMemoryRepo } from '../lib/store/memoryRepo';
-import { episodeRepo } from '../lib/store/episodeRepo';
-import { batchRepo } from '../lib/batch/batchRepo';
-import { taskRepo } from '../lib/task/taskRepo';
-import { startTask, pauseTask, resumeTask, abortTask, retryEnhanceEpisode, getEnhanceTaskStatus } from '../lib/task/taskRunner';
-import { exportPackage } from '../lib/exporter/exportPackage';
-import { ProjectBible } from '../types';
+import { createProjectSeed, buildBible, generateOutline, generateEpisodeFast, buildSynopsis } from '../lib/ai/episodeFlow.ts';
+import { runBatch, startBatch, pauseBatch, resumeBatch } from '../lib/ai/batchRunner.ts';
+import { projectRepo } from '../lib/store/projectRepo.ts';
+import { storyMemoryRepo } from '../lib/store/memoryRepo.ts';
+import { episodeRepo } from '../lib/store/episodeRepo.ts';
+import { batchRepo } from '../lib/batch/batchRepo.ts';
+import { taskRepo } from '../lib/task/taskRepo.ts';
+import { startTask, pauseTask, resumeTask, abortTask, retryEnhanceEpisode, getEnhanceTaskStatus } from '../lib/task/taskRunner.ts';
+import { exportPackage } from '../lib/exporter/exportPackage.ts';
+import { regenerateDegradedEpisode } from '../lib/ai/regenerateDegraded.ts';
+import { ProjectBible, EpisodeStatus } from '../types.ts';
+// 注意：runProject 已移除，因为它依赖 Node.js 特定模块（crypto, url, fs, path）
+// 如需使用，请通过 CLI 或 Node.js 服务器调用 scripts/run-project.ts
+// P3.2: 导入指令映射器和失败聚类
+import { getPresetInstructions, applyUserInstruction } from '../lib/guidance/instructionMapper';
+import { analyzeProjectFailures } from '../lib/guidance/failureCluster';
+// P4: 导入智能模块
+import { buildProjectFailureProfile, generateProfileSummary } from '../lib/intelligence/projectFailureProfile';
+import { generateInstructionSuggestion, clearDismissedRecommendation } from '../lib/intelligence/instructionRecommender';
 
 // This file acts as the "Server Action" layer or API Routes
 // In a real Next.js app, these would be in src/app/api/...
@@ -67,6 +76,15 @@ export const api = {
     async delete(id: string) {
       await projectRepo.delete(id);
       return true;
+    },
+
+    // P3.3: 更新总集数
+    async updateTotalEpisodes(projectId: string, totalEpisodes: number) {
+      const project = await projectRepo.get(projectId);
+      if (!project) throw new Error("Project not found");
+
+      await projectRepo.save(projectId, { totalEpisodes });
+      return project;
     }
   },
 
@@ -141,6 +159,15 @@ export const api = {
     },
     async getEnhanceTaskStatus(taskId: string) {
       return getEnhanceTaskStatus(taskId);
+    },
+    async regenerateDegraded(projectId: string, episodeIndex: number) {
+      try {
+        const result = await regenerateDegradedEpisode({ projectId, episodeIndex });
+        return result;
+      } catch (error: any) {
+        console.error(`[API] EP${episodeIndex} 重新生成失败：`, error);
+        throw error;
+      }
     }
   },
 
@@ -192,6 +219,142 @@ export const api = {
   platform: {
     async setPlatform(projectId: string, platformId: string) {
       return projectRepo.setPlatform(projectId, platformId);
+    }
+  },
+
+  // 注意：run.runProject 已移除，因为它依赖 Node.js 特定模块
+  // 请使用 CLI 命令：npm run run:project -- --prompt "<your prompt>"
+
+  // --- P3: Guidance & Creative Advisor ---
+  guidance: {
+    // 获取预设指令列表
+    async getPresetInstructions() {
+      return getPresetInstructions();
+    },
+
+    // 应用微调指令重新生成
+    async applyInstruction(projectId: string, episodeIndex: number, instructionId: string) {
+      const project = await projectRepo.get(projectId);
+      if (!project) throw new Error("Project not found");
+
+      console.log(`[API] P3.2: Applying instruction "${instructionId}" to EP${episodeIndex}`);
+
+      // 使用 generateEpisodeFast 重新生成，应用指令
+      const result = await generateEpisodeFast({
+        projectId,
+        episodeIndex,
+        userInstruction: instructionId
+      });
+
+      await episodeRepo.save(projectId, episodeIndex, result as any);
+      return result;
+    },
+
+    // 获取失败分析
+    async getFailureAnalysis(projectId: string) {
+      return await projectRepo.getFailureAnalysis(projectId);
+    },
+
+    // 获取创作建议
+    async getEpisodeAdvice(projectId: string) {
+      return await projectRepo.getEpisodeAdvice(projectId);
+    },
+
+    // 忽略创作建议
+    async dismissEpisodeAdvice(projectId: string) {
+      await projectRepo.dismissEpisodeAdvice(projectId);
+      return true;
+    }
+  },
+
+  // --- P4: Project Intelligence (项目级创作智能进化层) ---
+  intelligence: {
+    // 获取项目失败画像
+    async getProjectProfile(projectId: string) {
+      const profile = await projectRepo.getFailureProfile(projectId);
+      if (!profile) {
+        // 如果没有缓存画像，重新生成
+        console.log(`[API] P4.1: No cached profile, building new one for project ${projectId}`);
+        const newProfile = await buildProjectFailureProfile(projectId);
+        await projectRepo.saveFailureProfile(projectId, newProfile);
+        return {
+          ...newProfile,
+          summary: generateProfileSummary(newProfile)
+        };
+      }
+      return {
+        ...profile,
+        summary: generateProfileSummary(profile)
+      };
+    },
+
+    // 获取系统指令推荐
+    async getInstructionSuggestion(projectId: string) {
+      // 检查是否有缓存推荐
+      const cached = await projectRepo.getInstructionSuggestion(projectId);
+      if (cached) {
+        console.log(`[API] P4.3: Returning cached suggestion for project ${projectId}`);
+        return cached;
+      }
+
+      // 生成新推荐
+      console.log(`[API] P4.3: Generating new suggestion for project ${projectId}`);
+      const suggestion = await generateInstructionSuggestion(projectId);
+
+      if (suggestion) {
+        // 缓存推荐
+        await projectRepo.saveInstructionSuggestion(projectId, suggestion);
+      }
+
+      return suggestion;
+    },
+
+    // 忽略系统推荐
+    async dismissSuggestion(projectId: string) {
+      await projectRepo.dismissInstructionSuggestion(projectId);
+      console.log(`[API] P4.3: Dismissed suggestion for project ${projectId}`);
+      return true;
+    },
+
+    // 应用推荐指令（调用 guidance.applyInstruction 并触发追踪）
+    async applyRecommendation(projectId: string, episodeIndex: number, instructionId: string) {
+      const project = await projectRepo.get(projectId);
+      if (!project) throw new Error("Project not found");
+
+      console.log(`[API] P4.3: Applying recommendation "${instructionId}" to EP${episodeIndex}`);
+
+      // 清除忽略标记（用户接受了推荐）
+      clearDismissedRecommendation(projectId);
+
+      // 移除缓存的推荐
+      await projectRepo.dismissInstructionSuggestion(projectId);
+
+      // 使用 generateEpisodeFast 重新生成，应用指令
+      const result = await generateEpisodeFast({
+        projectId,
+        episodeIndex,
+        userInstruction: instructionId
+      });
+
+      await episodeRepo.save(projectId, episodeIndex, result as any);
+      return result;
+    }
+  },
+
+  // --- P5-Lite: Business Intelligence (只读) ---
+  business: {
+    // 获取 Project DNA（长期记忆）
+    async getProjectDNA(projectId: string) {
+      const { getProjectDNA } = await import('../lib/business/projectDNA');
+      return getProjectDNA(projectId);
+    },
+
+    // 获取稳定性预测
+    async getPredictability(projectId: string) {
+      const { analyzeStability } = await import('../lib/business/predictabilityEngine');
+      const project = await projectRepo.get(projectId);
+      if (!project) throw new Error("Project not found");
+      return analyzeStability(projectId);
     }
   }
 };

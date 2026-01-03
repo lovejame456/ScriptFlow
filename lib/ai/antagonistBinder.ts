@@ -239,6 +239,14 @@ export function bindRevealToAntagonistPressure(args: {
  * @param summary - Reveal summary
  * @param binding - 压力绑定
  * @returns { valid: boolean, error?: string } - 验证结果
+ * 
+ * PM NOTE (S0 Sprint):
+ * Do NOT validate reveal by keyword matching.
+ * Pressure is semantic, reveal quality is structural.
+ * Keyword-based validation causes deterministic failures.
+ * 
+ * This function now performs only basic semantic validation.
+ * Reveal quality will be validated through postSignals (revealHasConsequence, conflictProgressed, stateCoherent).
  */
 export function validateRevealAgainstBinding(
   summary: string,
@@ -249,25 +257,19 @@ export function validateRevealAgainstBinding(
     return { valid: false, error: 'Reveal summary cannot be empty' };
   }
 
-  // 验证 summary 是否包含压力相关的关键词
-  const pressureKeywords: Record<PressureVector, string[]> = {
-    'POWER': ['力量', '能力', '实力', '压制', '碾压', '优势'],
-    'RESOURCE': ['资源', '金钱', '情报', '物品', '人脉', '财富'],
-    'STATUS': ['地位', '阶级', '身份', '等级', '权威', '影响力'],
-    'RELATION': ['关系', '盟友', '敌人', '背叛', '决裂', '合作'],
-    'LIFE_THREAT': ['生命', '生存', '威胁', '危险', '致命', '死亡']
-  };
-
-  const keywords = pressureKeywords[binding.pressure];
-  const hasKeyword = keywords.some(keyword => summary.includes(keyword));
-
-  if (!hasKeyword) {
+  // 基础语义验证：summary 必须有实质性内容
+  // PM NOTE (S0): 移除关键词匹配，允许 AI 使用自然语义表达压力
+  // Pressure binding is generated (pressureVector + hint) and passed to Writer
+  // Writer uses hint to guide content creation, but validation is now structural
+  const trimmedSummary = summary.trim();
+  if (trimmedSummary.length < 10) {
     return {
       valid: false,
-      error: `Reveal summary must contain keywords related to ${binding.pressure} pressure`
+      error: `Reveal summary must contain meaningful content (minimum 10 characters, got ${trimmedSummary.length})`
     };
   }
 
+  console.log(`[AntagonistBinder] Reveal summary accepted (semantic validation, pressure=${binding.pressure}, length=${trimmedSummary.length})`);
   return { valid: true };
 }
 

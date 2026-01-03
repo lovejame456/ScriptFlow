@@ -12,8 +12,6 @@
  * - 禁止连续两集相同 type
  */
 
-import { createHash } from 'crypto';
-
 /**
  * New Reveal 类型枚举
  */
@@ -66,11 +64,18 @@ const DEFAULT_TYPE_DISTRIBUTION: Record<number, RevealType[]> = {
 export function generateNoRepeatKey(summary: string): string {
   // 兼容性处理：使用 String.prototype.normalize 的简化版本
   const normalizedSummary = summary.trim();
-  const hash = createHash('sha256')
-    .update(normalizedSummary)
-    .digest('hex')
-    .substring(0, 16);
-  return `reveal_${hash}`;
+
+  // 浏览器兼容的哈希实现
+  let hash = 0;
+  for (let i = 0; i < normalizedSummary.length; i++) {
+    const char = normalizedSummary.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // 转换为 32 位整数
+  }
+
+  // 转换为正数并转为十六进制
+  const hashHex = Math.abs(hash).toString(16).substring(0, 16);
+  return `reveal_${hashHex}`;
 }
 
 /**

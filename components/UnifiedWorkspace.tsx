@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Project, EpisodeStatus, GenerationTask, BatchState, EpisodeAttemptLog, PACING_TEMPLATES, StoryMemory } from '../types';
+import { Project, EpisodeStatus, GenerationTask, BatchState, EpisodeAttemptLog, PACING_TEMPLATES, StoryMemory, ProjectFailureAnalysis, EpisodeAdvice, ProjectFailureProfile, SystemInstructionSuggestion } from '../types';
 import {
     ChevronLeft, ChevronRight, Save, Wand2, Check, AlertCircle, Lock,
     BookOpen, ScrollText, Play, Pause, XCircle, RotateCcw,
@@ -10,6 +10,8 @@ import { api } from '../api';
 import { PLATFORM_NAMES } from '../types/platform';
 import { getPlatform } from '../platforms';
 import { restoreFromTask } from '../lib/ai/restoreHelper';
+import InstructionPicker from './InstructionPicker';
+import { sortContentBySceneIndex, formatSceneHeader } from '../lib/utils/sceneSorter';
 
 interface UnifiedWorkspaceProps {
     project: Project;
@@ -35,6 +37,14 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
     const [editorContent, setEditorContent] = useState('');
     const [isSaving, setIsSaving] = useState(false);
     const [isGeneratingEp, setIsGeneratingEp] = useState(false);
+    
+    // P3: Guidance & Creative Advisor
+    const [failureAnalysis, setFailureAnalysis] = useState<ProjectFailureAnalysis | null>(null);
+    const [episodeAdvice, setEpisodeAdvice] = useState<EpisodeAdvice | null>(null);
+
+    // P4: Project Intelligence (项目级创作智能进化层)
+    const [projectProfile, setProjectProfile] = useState<ProjectFailureProfile | null>(null);
+    const [systemSuggestion, setSystemSuggestion] = useState<SystemInstructionSuggestion | null>(null);
 
     // Data Refs
     const pollingInterval = useRef<NodeJS.Timeout | null>(null);
@@ -130,7 +140,9 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
     useEffect(() => {
         const ep = project.episodes?.[currentEpIndex];
         if (ep) {
-            setEditorContent(ep.content || '');
+            // 在加载内容时按场景序号排序，确保显示顺序正确
+            const sortedContent = sortContentBySceneIndex(ep.content || '');
+            setEditorContent(sortedContent);
             if (ep.content || ep.status === EpisodeStatus.COMPLETED) {
                 setCurrentViewMode('editor');
             } else {
@@ -154,6 +166,31 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                 api.batch.getState(project.id)
             ]);
             try { const mem = await api.storyMemory.get(project.id); setStoryMemory(mem); } catch (e) { }
+
+            // P3: 加载失败分析和创作建议
+            try {
+                const [fAnalysis, eAdvice] = await Promise.all([
+                    api.guidance.getFailureAnalysis(project.id),
+                    api.guidance.getEpisodeAdvice(project.id)
+                ]);
+                setFailureAnalysis(fAnalysis);
+                setEpisodeAdvice(eAdvice);
+            } catch (e) {
+                console.error('Failed to load guidance data:', e);
+            }
+
+            // P4: 加载项目失败画像和系统推荐
+            try {
+                const [profile, suggestion] = await Promise.all([
+                    api.intelligence.getProjectProfile(project.id),
+                    api.intelligence.getInstructionSuggestion(project.id)
+                ]);
+                setProjectProfile(profile);
+                setSystemSuggestion(suggestion);
+            } catch (e) {
+                console.error('Failed to load intelligence data:', e);
+            }
+            
             setTask(taskData);
             setBatchState(batchData);
             setLoading(false);
@@ -218,10 +255,74 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
         finally { setIsGeneratingEp(false); }
     };
 
+    // P3.2: 处理微调指令
+    const handleApplyInstruction = async (instructionId: string) => {
+        if (!currentEp) return;
+        setIsGeneratingEp(true);
+        try {
+            await api.guidance.applyInstruction(project.id, currentEp.id, instructionId);
+            await onRefresh();
+            await loadState(); // 重新加载状态，包括失败分析
+            alert('微调指令已应用，剧本已重新生成');
+        } catch (e: any) { 
+            alert('应用指令失败: ' + e.message); 
+        } finally { 
+            setIsGeneratingEp(false); 
+        }
+    };
+
     // --- Helpers ---
 
     const currentEp = project.episodes?.[currentEpIndex];
     if (!project.episodes?.length) return <div className="p-12 text-center text-textMuted">暂无集数数据...</div>;
+
+    /**
+     * 判断当前项目阶段是否允许"标记为完成"
+     *
+     * S1 阶段（逐集修内容）：不允许标记为完成，只保存当前版本
+     * S2 及后续阶段：允许标记为完成（终态语义）
+     */
+    const canMarkAsCompleted = () => {
+        // S1 阶段（逐集修内容）：不允许标记为完成
+        if ((project as any).phase === 'S1') return false;
+
+        // 未定义阶段：保守处理，不允许
+        if (!(project as any).phase) return false;
+
+        // 仅在 S2 及后续阶段允许
+        const allowedPhases = ['S2', 'READY_FOR_EXPORT', 'DELIVERED'];
+        return allowedPhases.includes((project as any).phase);
+    };
+
+    /**
+     * 根据项目阶段和剧集状态决定保存按钮的文案和样式
+     */
+    const getSaveButtonConfig = () => {
+        const isDraft = currentEp.status === EpisodeStatus.DRAFT || currentEp.status === EpisodeStatus.DEGRADED;
+        const canComplete = canMarkAsCompleted();
+
+        if (isDraft) {
+            if (canComplete) {
+                // S2 及后续阶段 + DRAFT → 允许标记完成（终态语义）
+                return {
+                    text: '保存并标记完成',
+                    className: 'bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 border border-orange-500/30'
+                };
+            } else {
+                // S1 阶段 + DRAFT → 非终态语义（可反复生成/修改）
+                return {
+                    text: '保存草稿',
+                    className: 'bg-primary/20 hover:bg-primary/30 text-primary'
+                };
+            }
+        } else {
+            // 已完成剧集
+            return {
+                text: '保存修改',
+                className: 'bg-primary/20 hover:bg-primary/30 text-primary'
+            };
+        }
+    };
 
     /**
      * 计算进度百分比（状态驱动）
@@ -343,6 +444,25 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                                         <div className="h-full bg-gradient-to-r from-primary to-accent transition-all duration-500" style={{ width: `${getProgress()}%` }} />
                                     </div>
                                 </div>
+
+                                {/* Run Summary */}
+                                {batchState.status === 'DONE' && project.summaryText && (
+                                  <div className="mt-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 animate-in fade-in">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <CheckCircle size={16} className="text-emerald-500" />
+                                      <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">生成完成</span>
+                                    </div>
+                                    <details className="group">
+                                      <summary className="text-xs text-textMuted cursor-pointer hover:text-white transition-colors flex items-center gap-2">
+                                        <ChevronDown size={14} className="group-hover:translate-y-0.5 transition-transform" />
+                                        查看运行报告
+                                      </summary>
+                                      <pre className="mt-3 text-xs font-mono text-emerald-300/80 whitespace-pre-wrap bg-black/30 rounded-lg p-4 border border-white/5 overflow-x-auto">
+                                        {project.summaryText}
+                                      </pre>
+                                    </details>
+                                  </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -351,22 +471,121 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
 
                 {/* Expanded details */}
                 {isHeaderExpanded && (
-                    <div className="px-6 mt-4 pt-4 border-t border-white/5 flex items-center gap-6 overflow-x-auto text-xs text-textMuted">
-                        <div className="flex items-center gap-2">
-                            <Target size={14} className="text-primary" />
-                            <span>当前目标: {task?.step === 'EPISODE' ? `生成 EP${task.currentEpisode}` : '准备中'}</span>
-                        </div>
-                        <div className="w-px h-3 bg-white/10" />
-                        {(() => {
-                            const rec = project.platformId === 'hongguo'; // Simple check
-                            if (!rec) return null;
-                            return (
-                                <div className="flex items-center gap-2 text-rose-400">
-                                    <TrendingUp size={14} />
-                                    <span>红果推荐区间监控中</span>
+                    <div className="px-6 mt-4 pt-4 border-t border-white/5 space-y-4">
+                        {/* P3.3: 创作方向建议 */}
+                        {episodeAdvice && (
+                            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <TrendingUp size={14} className="text-blue-400" />
+                                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">
+                                        创作方向建议
+                                    </span>
                                 </div>
-                            )
-                        })()}
+                                <p className="text-xs text-white/90 mb-3">{episodeAdvice.reason}</p>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={async () => {
+                                            // 应用建议（调整集数）
+                                            await api.project.save(project.id, { totalEpisodes: episodeAdvice.recommendedEpisodes });
+                                            await api.guidance.dismissEpisodeAdvice(project.id);
+                                            await onRefresh();
+                                        }}
+                                        className="px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs font-bold rounded-lg transition-colors"
+                                    >
+                                        调整为 {episodeAdvice.recommendedEpisodes} 集
+                                    </button>
+                                    <button 
+                                        onClick={async () => {
+                                            // 忽略建议
+                                            await api.guidance.dismissEpisodeAdvice(project.id);
+                                            await onRefresh();
+                                        }}
+                                        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-textMuted text-xs font-bold rounded-lg transition-colors"
+                                    >
+                                        保持原计划
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* P4: 智能系统推荐 */}
+                        {systemSuggestion && systemSuggestion.confidence === 'high' && (
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 animate-in fade-in">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <Zap size={14} className="text-purple-400" />
+                                    <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">
+                                        💡 系统建议（{systemSuggestion.confidence === 'high' ? '高置信' : '中置信'}）
+                                    </span>
+                                </div>
+                                <p className="text-xs text-white/90 mb-3">{systemSuggestion.reason}</p>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={async () => {
+                                            // 应用推荐指令
+                                            if (currentEp) {
+                                                setIsGeneratingEp(true);
+                                                try {
+                                                    await api.intelligence.applyRecommendation(project.id, currentEp.id, systemSuggestion.instructionId);
+                                                    await onRefresh();
+                                                    await loadState(); // 重新加载状态
+                                                    alert('系统建议已应用，剧本已重新生成');
+                                                } catch (e: any) {
+                                                    alert('应用建议失败: ' + e.message);
+                                                } finally {
+                                                    setIsGeneratingEp(false);
+                                                }
+                                            } else {
+                                                alert('请先选择一集');
+                                            }
+                                        }}
+                                        className="px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 text-xs font-bold rounded-lg transition-colors"
+                                    >
+                                        应用指令
+                                    </button>
+                                    <button
+                                        onClick={async () => {
+                                            // 忽略推荐
+                                            await api.intelligence.dismissSuggestion(project.id);
+                                            await onRefresh();
+                                        }}
+                                        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-textMuted text-xs font-bold rounded-lg transition-colors"
+                                    >
+                                        忽略本次
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* P4: 项目失败画像摘要 */}
+                        {projectProfile && projectProfile.summary && (
+                            <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <AlertCircle size={14} className="text-orange-400" />
+                                    <span className="text-xs font-bold text-orange-400 uppercase tracking-wider">
+                                        项目画像
+                                    </span>
+                                </div>
+                                <p className="text-xs text-white/90">{projectProfile.summary}</p>
+                            </div>
+                        )}
+
+                        <div className="flex items-center gap-6 overflow-x-auto text-xs text-textMuted">
+                            <div className="flex items-center gap-2">
+                                <Target size={14} className="text-primary" />
+                                <span>当前目标: {task?.step === 'EPISODE' ? `生成 EP${task.currentEpisode}` : '准备中'}</span>
+                            </div>
+                            <div className="w-px h-3 bg-white/10" />
+                            {(() => {
+                                const rec = project.platformId === 'hongguo'; // Simple check
+                                if (!rec) return null;
+                                return (
+                                    <div className="flex items-center gap-2 text-rose-400">
+                                        <TrendingUp size={14} />
+                                        <span>红果推荐区间监控中</span>
+                                    </div>
+                                )
+                            })()}
+                        </div>
                     </div>
                 )}
             </div>
@@ -439,36 +658,14 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                 </div>
 
                 {/* --- Center: Editor or Preview --- */}
-                <div className="flex-1 flex flex-col bg-background relative shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]">
+                <div className="flex-1 flex flex-col bg-background relative shadow-[inset_0_0_100px_rgba(0,0,0,0.5)] min-h-0">
 
                     {/* Editor Toolbar */}
                     <div className="h-12 border-b border-white/5 flex items-center justify-between px-6 bg-surface/30 backdrop-blur-sm z-10">
                         <div className="flex items-center gap-3 text-sm font-medium text-textMuted">
                             <span className="text-white">EP {currentEp.id}</span>
                             <span className="text-white/20">|</span>
-                            <span className="truncate max-w-md" title={currentEp.outline?.summary}>{currentEp.outline?.summary || 'No Outline'}</span>
-                            {currentEp.status === EpisodeStatus.DRAFT && (
-                                <span className="text-orange-400 text-xs flex items-center gap-1">
-                                    <CheckCircle size={12} />
-                                    剧本已生成，可立即阅读
-                                </span>
-                            )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            {currentViewMode === 'editor' && (
-                                <button
-                                    onClick={handleSaveContent}
-                                    disabled={isSaving}
-                                    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors ${
-                                        currentEp.status === EpisodeStatus.DRAFT
-                                            ? 'bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 border border-orange-500/30'
-                                            : 'bg-primary/20 hover:bg-primary/30 text-primary'
-                                    }`}
-                                >
-                                    {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                                    {currentEp.status === EpisodeStatus.DRAFT ? '保存并标记为完成' : '保存剧本'}
-                                </button>
-                            )}
+                            <span className="truncate max-w-lg" title={currentEp.outline?.summary}>{currentEp.outline?.summary || 'No Outline'}</span>
                         </div>
                     </div>
 
@@ -515,20 +712,42 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                             </div>
                         ) : (
                             <div className="max-w-3xl mx-auto py-12 px-8 min-h-full">
-                                {currentEp.status === EpisodeStatus.DRAFT && (
-                                    <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/20 rounded-xl">
-                                        <div className="flex items-start gap-3">
-                                            <CheckCircle size={16} className="text-orange-400 shrink-0 mt-0.5" />
-                                            <div className="flex-1">
-                                                <p className="text-sm text-orange-400 font-medium mb-1">剧本已生成</p>
-                                                <p className="text-xs text-textMuted leading-relaxed">
-                                                    {currentEp.humanSummary || '可立即阅读，后台正在进行商业校验'}<br />
-                                                    请编辑内容后点击"保存并标记为完成"，系统将自动标记为 COMPLETED 并计入进度。
-                                                </p>
+                                {currentEp.status === EpisodeStatus.DRAFT && (() => {
+                                    const canComplete = canMarkAsCompleted();
+                                    if (canComplete) {
+                                        // S2 及后续阶段：鼓励标记完成
+                                        return (
+                                            <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/20 rounded-xl">
+                                                <div className="flex items-start gap-3">
+                                                    <CheckCircle size={16} className="text-orange-400 shrink-0 mt-0.5" />
+                                                    <div className="flex-1">
+                                                        <p className="text-sm text-orange-400 font-medium mb-1">剧本已生成</p>
+                                                        <p className="text-xs text-textMuted leading-relaxed">
+                                                            {currentEp.humanSummary || '可立即阅读，后台正在进行商业校验'}<br />
+                                                            请编辑内容后点击「保存并标记完成」，系统将自动标记为 COMPLETED 并计入进度。
+                                                        </p>
+                                                    </div>
+                                                </div>
                                             </div>
-                                        </div>
-                                    </div>
-                                )}
+                                        );
+                                    } else {
+                                        // S1 阶段：状态提示（不鼓励终态）
+                                        return (
+                                            <div className="mb-6 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                                                <div className="flex items-start gap-3">
+                                                    <RotateCcw size={16} className="text-blue-400 shrink-0 mt-0.5" />
+                                                    <div className="flex-1">
+                                                        <p className="text-sm text-blue-400 font-medium mb-1">当前阶段：修订中（S1）</p>
+                                                        <p className="text-xs text-textMuted leading-relaxed">
+                                                            {currentEp.humanSummary || '可立即阅读，后台正在进行商业校验'}<br />
+                                                            本集可多次重写，建议在 S2 阶段再标记完成。
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+                                })()}
                                 <textarea
                                     className="w-full h-full bg-transparent resize-none focus:outline-none font-sans text-lg leading-loose text-slate-200 placeholder-textMuted/20 selection:bg-primary/30 min-h-[800px]"
                                     value={editorContent}
@@ -543,9 +762,9 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                 </div>
 
                 {/* --- Right: Tabs (Check | Logs | Canon) --- */}
-                <div className="w-80 border-l border-white/5 bg-surface/30 backdrop-blur-xl flex flex-col z-10 transition-all duration-300">
+                <div className="w-80 border-l border-white/5 bg-surface/30 backdrop-blur-xl flex flex-col z-10 transition-all duration-300 shrink-0">
                     {/* Tab Header */}
-                    <div className="flex border-b border-white/5">
+                    <div className="flex border-b border-white/5 shrink-0">
                         <button
                             onClick={() => setRightTab('check')}
                             className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-wider flex justify-center items-center gap-2 border-b-2 transition-colors ${rightTab === 'check' ? 'border-primary text-white bg-white/5' : 'border-transparent text-textMuted hover:text-white'}`}
@@ -567,11 +786,34 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                     </div>
 
                     {/* Tab Content */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-0">
-
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-0 min-h-0">
                         {/* --- TAB: CHECK --- */}
                         {rightTab === 'check' && (
                             <div className="p-5 space-y-4">
+                                {/* P3.1: 失败分析总结 */}
+                                {failureAnalysis && failureAnalysis.degradedEpisodes > 0 && (
+                                    <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-3">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <TrendingUp size={14} className="text-rose-400" />
+                                            <span className="text-xs font-bold text-rose-400 uppercase tracking-wider">
+                                                失败分析
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-white/90 mb-2">{failureAnalysis.humanSummary}</p>
+                                        <div className="text-[10px] text-textMuted">
+                                            降级 {failureAnalysis.degradedEpisodes} / {failureAnalysis.totalEpisodes} 集
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* P3.2: 微调指令 */}
+                                {(currentEp.status === EpisodeStatus.DRAFT || currentEp.status === EpisodeStatus.DEGRADED) && (
+                                    <InstructionPicker
+                                        onApply={handleApplyInstruction}
+                                        disabled={isGeneratingEp}
+                                    />
+                                )}
+
                                 <div className="text-xs font-bold text-textMuted uppercase mb-2">当前集检测报告</div>
                                 {currentEp.validation?.qualityCheck?.issues && currentEp.validation.qualityCheck.issues.length > 0 ? (
                                     currentEp.validation.qualityCheck.issues.map((issue, idx) => (
@@ -661,6 +903,23 @@ const UnifiedWorkspace: React.FC<UnifiedWorkspaceProps> = ({ project, onRefresh 
                                 )}
                             </div>
                         )}
+                    </div>
+
+                    {/* --- Bottom: Save Button Area (独立，固定在底部) --- */}
+                    <div className="p-4 border-t border-white/5 bg-surface/50 backdrop-blur-sm shrink-0">
+                        {currentViewMode === 'editor' && (() => {
+                            const buttonConfig = getSaveButtonConfig();
+                            return (
+                                <button
+                                    onClick={handleSaveContent}
+                                    disabled={isSaving}
+                                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-bold rounded-xl transition-all shadow-lg hover:shadow-xl active:scale-[0.98] ${buttonConfig.className}`}
+                                >
+                                    {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                                    {buttonConfig.text}
+                                </button>
+                            );
+                        })()}
                     </div>
                 </div>
 

@@ -15,10 +15,18 @@
     "test:m16.5": "tsx scripts/test-m16.5-adaptive-scheduling.ts",
     "test:m16.6": "tsx scripts/test-m16.6-meta-policy.ts",
     "test:m16.7": "tsx scripts/test-m16.7-gold-promote.ts",
+    "test:s0": "tsx scripts/test-s0-structure-consistency.ts",
+    "test:phase0": "tsx scripts/test-phase0-resource-driven.ts",
+    "test:p3": "tsx test-p3-guidance.ts",
+    "test:p4": "tsx test-p4-intelligence.ts",
+    "test:p5-lite": "tsx test-p5-lite.ts",
+    "test:commercial-format": "tsx scripts/test-commercial-format-and-order.ts",
     "metrics:m16": "tsx scripts/m16-metrics-report.ts",
     "metrics:diff": "tsx scripts/m16-metrics-diff.ts",
     "meta:build": "tsx scripts/m16-meta-build.ts",
-    "gold:promote": "tsx scripts/m16-gold-promote.ts"
+    "gold:promote": "tsx scripts/m16-gold-promote.ts",
+    "run:project": "tsx scripts/run-project.ts",
+    "test:product-orchestrator": "tsx scripts/test-product-orchestrator.ts"
   },
   "dependencies": {
     "jsonrepair": "^3.13.1",

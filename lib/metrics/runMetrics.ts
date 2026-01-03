@@ -146,6 +146,9 @@ function computeAggregates(run: RunMetrics) {
   const warnings: string[] = [];
   const errors: string[] = [];
 
+  // P1: 统计降级集数（重试次数超过 MAX_SLOT_RETRIES + 1）
+  let degradedCount = 0;
+
   // 连续重复 type 检查
   for (const ep of run.episodes) {
     const t = ep.contract.reveal.type;
@@ -182,6 +185,14 @@ function computeAggregates(run: RunMetrics) {
   const avgRetries = retries.length ? retries.reduce((a, b) => a + b, 0) / retries.length : 0;
   const p95Retries = percentile(retries, 0.95);
 
+  // P1: 统计降级集（重试次数 > 3 表示经过了 Relaxed Retry）
+  const DEFAULT_MAX_SLOT_RETRIES = 3;
+  for (const retryCount of retries) {
+    if (retryCount > DEFAULT_MAX_SLOT_RETRIES) {
+      degradedCount++;
+    }
+  }
+
   // PM 预警规则（可调）
   if (episodesWithRetry >= Math.ceil(run.episodes.length * 0.5)) warnings.push('High retry frequency: writer near structure boundary');
   if (p95Retries >= 2) warnings.push('p95 retries >= 2');
@@ -200,6 +211,8 @@ function computeAggregates(run: RunMetrics) {
       maxConsecutiveDrop: 0
     },
     retry: { episodesWithRetry, avgRetries, p95Retries },
+    // P1: 降级集统计
+    degradedCount,
     health: { warnings, errors, score },
     // M16.5: 自适应参数说明（如果存在）
     ...(run.adaptiveParams ? {

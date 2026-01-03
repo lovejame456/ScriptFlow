@@ -58,24 +58,139 @@ function buildAdjustedSlots(
   outline: any,
   originalSlots: SlotWriteInput
 ): SlotWriteInput {
-  // 深拷贝原始 slots
-  const adjusted: SlotWriteInput = JSON.parse(JSON.stringify(originalSlots));
+  // 深拷贝原始 slots，确保结构正确
+  const originalJson = JSON.stringify(originalSlots);
+  console.log(`[buildAdjustedSlots] Original slots JSON:`, originalJson);
+
+  const adjusted: SlotWriteInput = JSON.parse(originalJson);
+
+  // 验证 adjusted 的结构
+  if (!adjusted || typeof adjusted !== 'object') {
+    console.error(`[buildAdjustedSlots] ERROR: Invalid adjusted structure:`, adjusted);
+    throw new Error(`buildAdjustedSlots: Invalid slots structure after deep copy`);
+  }
+
+  // 支持两种格式：
+  // 1. SlotWriteInput 格式: { slots: { ... } }
+  // 2. 直接 slots 对象: { NEW_REVEAL: { ... }, CONFLICT_PROGRESS: { ... } }
+  let slotsObject: any;
+
+  if (adjusted.slots && typeof adjusted.slots === 'object') {
+    // 标准格式：{ slots: { ... } }
+    slotsObject = adjusted.slots;
+  } else if (Object.keys(adjusted).some(key => ['NEW_REVEAL', 'CONFLICT_PROGRESS', 'COST_PAID'].includes(key))) {
+    // 直接格式：{ NEW_REVEAL: { ... }, ... }
+    slotsObject = adjusted;
+  } else {
+    console.error(`[buildAdjustedSlots] ERROR: Cannot determine slots format`, adjusted);
+    throw new Error(`buildAdjustedSlots: Invalid slots format`);
+  }
+
+  console.log(`[buildAdjustedSlots] Adjusted slots keys:`, Object.keys(slotsObject));
 
   // 第一次重试：加粗必须出现的事实句
-  if (attempt === 2 && adjusted.slots.NEW_REVEAL) {
-    adjusted.slots.NEW_REVEAL.instruction +=
+  if (attempt === 2 && slotsObject.NEW_REVEAL) {
+    slotsObject.NEW_REVEAL.instruction +=
       ` 【重试提示】必须明确出现"发现/证据/当场验证"等表达，禁止模糊暗示。`;
     console.log(`[buildAdjustedSlots] Tightened instruction for NEW_REVEAL (attempt 2)`);
   }
 
   // 第二次重试：强制使用特定词汇
-  if (attempt === 3 && adjusted.slots.NEW_REVEAL) {
-    adjusted.slots.NEW_REVEAL.instruction +=
+  if (attempt === 3 && slotsObject.NEW_REVEAL) {
+    slotsObject.NEW_REVEAL.instruction +=
       ` 【最终重试】必须使用以下词汇：发现、证实、证据、验证、当场。`;
     console.log(`[buildAdjustedSlots] Further tightened instruction for NEW_REVEAL (attempt 3)`);
   }
 
-  return adjusted;
+  // 如果原始格式是 { slots: { ... } }，则需要包装回去
+  if (adjusted.slots && typeof adjusted.slots === 'object') {
+    return adjusted;
+  } else {
+    // 直接格式，已经是 slots 对象，需要包装
+    return { slots: slotsObject };
+  }
+}
+
+/**
+ * 构建降级约束的 Slots（Relaxed Retry）
+ *
+ * P1: 当所有正常重试失败后，使用放宽约束重试一次
+ *
+ * @param contract - 结构契约
+ * @param outline - 本集大纲
+ * @param originalSlots - 原始 slots
+ * @returns SlotWriteInput - 放宽约束后的 slots
+ */
+function buildRelaxedSlots(
+  contract: StructureContract,
+  outline: any,
+  originalSlots: SlotWriteInput
+): SlotWriteInput {
+  // 深拷贝原始 slots
+  const originalJson = JSON.stringify(originalSlots);
+  const relaxed: SlotWriteInput = JSON.parse(originalJson);
+
+  let slotsObject: any;
+  if (relaxed.slots && typeof relaxed.slots === 'object') {
+    slotsObject = relaxed.slots;
+  } else if (Object.keys(relaxed).some(key => ['NEW_REVEAL', 'CONFLICT_PROGRESS', 'COST_PAID'].includes(key))) {
+    slotsObject = relaxed;
+  } else {
+    console.error(`[buildRelaxedSlots] ERROR: Cannot determine slots format`, relaxed);
+    throw new Error(`buildRelaxedSlots: Invalid slots format`);
+  }
+
+  console.log(`[buildRelaxedSlots] Building relaxed slots for EP${contract.episode}`);
+
+  // 放宽 NEW_REVEAL 约束（如果 required）
+  if (contract.mustHave.newReveal.required && slotsObject.NEW_REVEAL) {
+    const originalInstruction = slotsObject.NEW_REVEAL.instruction || '';
+
+    // 将 "必须" 改为 "建议"
+    slotsObject.NEW_REVEAL.instruction = originalInstruction
+      .replace(/必须/g, '建议')
+      .replace(/【强制】/g, '【建议】')
+      .replace(/【零容忍】/g, '')
+      + ` 【降级模式】本集结构校验已放宽，不强求严格的结构完整性，请尽力而为即可。`;
+
+    console.log(`[buildRelaxedSlots] Relaxed NEW_REVEAL constraint`);
+  }
+
+  // 放宽 pressure 约束（如果有）
+  if (slotsObject.NEW_REVEAL && contract.mustHave.newReveal.pressureHint) {
+    const originalInstruction = slotsObject.NEW_REVEAL.instruction || '';
+    slotsObject.NEW_REVEAL.instruction = originalInstruction
+      .replace(/压力等级.*?，/g, '')
+      .replace(/必须体现.*?紧迫感/g, '建议体现一定紧迫感');
+
+    console.log(`[buildRelaxedSlots] Relaxed pressure constraint`);
+  }
+
+  // 包装回去
+  if (relaxed.slots && typeof relaxed.slots === 'object') {
+    return relaxed;
+  } else {
+    return { slots: slotsObject };
+  }
+}
+
+/**
+ * 构建降级状态的 Summary
+ *
+ * P2: 当剧集降级完成时，生成包含可操作建议的 Summary
+ *
+ * @param episodeIndex - 剧集编号
+ * @param error - 错误对象
+ * @returns string - 降级 Summary 文本（包含可操作按钮提示）
+ */
+function buildDegradedSummary(episodeIndex: number, error: Error): string {
+  return `⚠ 第 ${episodeIndex} 集发生结构异常，系统已自动降级并继续生成
+
+失败原因：${error.message}
+
+建议操作：
+[重新生成 EP${episodeIndex}] → 以增强 Reveal 约束重新生成
+[接受并继续] → 在剧集列表中手动编辑后标记为完成`;
 }
 
 // 题材与集数自动判断结果接口
@@ -287,13 +402,15 @@ export async function createProjectSeed(prompt: string, options?: MetricsOptions
 
   // Step 3: 使用 AI 判断结果覆盖题材、集数和节奏模板
   seed.genre = genreInfer.genre;
-  seed.totalEpisodes = genreInfer.recommendedEpisodes;
+  // 如果用户指定了总集数，优先使用用户指定的值
+  seed.totalEpisodes = options?.totalEpisodes || genreInfer.recommendedEpisodes;
   seed.pacingTemplateId = genreInfer.pacingTemplateId;
 
   console.log('[createProjectSeed] Final seed with AI judgment:', {
     genre: seed.genre,
     totalEpisodes: seed.totalEpisodes,
-    pacingTemplateId: seed.pacingTemplateId
+    pacingTemplateId: seed.pacingTemplateId,
+    userOverride: options?.totalEpisodes ? 'User specified' : 'AI recommended'
   });
 
   span?.end();
@@ -1348,12 +1465,14 @@ export async function generateEpisodeFast({
   projectId,
   episodeIndex,
   collectMetrics = false,
-  timer
+  timer,
+  userInstruction
 }: {
   projectId: string;
   episodeIndex: number;
   collectMetrics?: boolean;
   timer?: Timer;
+  userInstruction?: string;  // P3.2: 用户微调指令
 }) {
   const project = await projectRepo.get(projectId);
   if (!project) throw new Error("Project not found");
@@ -1389,10 +1508,35 @@ export async function generateEpisodeFast({
     });
   } catch (error: any) {
     console.error(`[generateEpisodeFast] StructureContract generation failed:`, error);
-    // M16 铁律：结构失败直接终止，不使用 fallback
-    throw new Error(
-      `[generateEpisodeFast] StructureContract generation failed for EP${episodeIndex}: ${error.message || String(error)}`
-    );
+
+    // P1 修复：结构失败直接返回 DEGRADED，而非抛出异常
+    const degradedError = error;
+    const degradedSummary = buildDegradedSummary(episodeIndex, degradedError);
+
+    // 返回 DEGRADED 状态的 Episode 对象
+    const degradedEpisode = {
+      episodeIndex,
+      status: EpisodeStatus.DEGRADED,
+      title: outline?.title || `第 ${episodeIndex} 集（降级）`,
+      content: '结构契约生成失败，已自动降级',
+      outline,
+      act: outline?.act,
+      hook: outline?.hook || '',
+      validation: {
+        fastCheck: { passed: false, errors: [degradedError.message] },
+        qualityCheck: { passed: false, issues: [degradedError.message] }
+      },
+      humanSummary: degradedSummary,
+      metadata: {
+        phase: 1,
+        degradationReason: degradedError.message
+      }
+    };
+
+    // P1 修复：保存 DEGRADED 状态到 episodeRepo，这样 batchRunner 才能读取到
+    await episodeRepo.save(projectId, episodeIndex, degradedEpisode);
+
+    return degradedEpisode as any;
   }
 
   // M16.4: 记录 contract 到 metrics
@@ -1400,6 +1544,40 @@ export async function generateEpisodeFast({
     metrics.recordContract(episodeIndex, structureContract);
   } catch (err) {
     console.warn(`[generateEpisodeFast] Failed to record contract metrics:`, err);
+  }
+
+  // P4.2: 如果有用户指令，记录应用前的状态
+  let instructionBeforeRatio: number | null = null;
+  if (userInstruction) {
+    try {
+      const { recordInstructionBefore } = await import('../intelligence/instructionImpactTracker');
+      instructionBeforeRatio = await recordInstructionBefore(projectId, userInstruction, episodeIndex);
+    } catch (err) {
+      console.warn(`[generateEpisodeFast] P4.2: Failed to record instruction BEFORE state:`, err);
+    }
+  }
+
+  // P3.2: 如果有用户指令，应用约束修改
+  if (userInstruction) {
+    try {
+      const { applyUserInstruction } = await import('../guidance/instructionMapper');
+      structureContract = applyUserInstruction(structureContract, userInstruction);
+      console.log(`[generateEpisodeFast] P3.2: Applied user instruction "${userInstruction}"`);
+    } catch (err) {
+      console.warn(`[generateEpisodeFast] P3.2: Failed to apply user instruction:`, err);
+      // 不阻塞生成，继续使用原始 contract
+    }
+  }
+
+  // S1: 确保 contract 的必需 slots 不被指令破坏
+  // 即使指令修改了 optional 字段，也要确保至少有冲突推进
+  if (!structureContract.optional) {
+    structureContract.optional = {};
+  }
+  // 确保 conflictProgressed 至少为 true（保证 CONFLICT_PROGRESS slot 会被创建）
+  if (structureContract.optional.conflictProgressed === undefined || structureContract.optional.conflictProgressed === false) {
+    structureContract.optional.conflictProgressed = true;
+    console.log(`[generateEpisodeFast] S1: Ensured conflictProgressed = true for slot integrity`);
   }
 
   // M16 Step 2: 构建 SlotWriteInput
@@ -1477,7 +1655,8 @@ export async function generateEpisodeFast({
           pacingContext,
           storyMemory: memoryBefore,
           characterFactBlocks: promptInjection
-        }
+        },
+        outputMode: 'COMMERCIAL_SCRIPT'
       });
 
       // M16 Step 5: 验证 Slots（零容忍）
@@ -1492,10 +1671,12 @@ export async function generateEpisodeFast({
           throw new Error(`[generateEpisodeFast] STRUCTURE_FAIL: ${validation.errors.join(', ')}`);
         }
 
-        // 如果是最后一次重试，抛出错误
+        // 如果是最后一次重试，准备 Relaxed Retry（P1）
         if (attempt === MAX_SLOT_RETRIES) {
           const errorMessage = `Slot validation failed after ${MAX_SLOT_RETRIES} attempts: ${validation.errors.join(', ')}`;
-          throw new Error(`[generateEpisodeFast] STRUCTURE_FAIL: ${errorMessage}`);
+          lastError = new Error(errorMessage);
+          console.log(`[generateEpisodeFast] All retries exhausted, will try Relaxed Retry (P1)`);
+          break;
         }
 
         // 记录错误并继续下一次重试
@@ -1522,27 +1703,117 @@ export async function generateEpisodeFast({
       lastError = error;
 
       // 仅对结构失败错误重试
-      if (!isStructureFailError(error) || attempt === MAX_SLOT_RETRIES) {
-        // M16 铁律：非结构失败或重试次数用完，直接终止
+      if (!isStructureFailError(error)) {
+        // M16 铁律：非结构失败，直接终止
         throw new Error(
           `[generateEpisodeFast] SlotWriter failed for EP${episodeIndex}: ${error.message || String(error)}`
         );
+      }
+
+      // 如果是最后一次重试，跳出循环尝试 Relaxed Retry（P1）
+      if (attempt === MAX_SLOT_RETRIES) {
+        console.log(`[generateEpisodeFast] All retries exhausted, will try Relaxed Retry (P1)`);
+        break;
       }
 
       console.log(`[generateEpisodeFast] Will retry slot write (attempt ${attempt + 1}/${MAX_SLOT_RETRIES})`);
     }
   }
 
-  // 如果所有重试都失败，抛出最后的错误
+  // P1: 如果所有正常重试都失败，尝试 Relaxed Retry（降低约束）
+  if (!slotOutput && lastError && isStructureFailError(lastError)) {
+    console.log(`[generateEpisodeFast] P1: Attempting Relaxed Retry with relaxed constraints`);
+
+    try {
+      const relaxedSlots = buildRelaxedSlots(
+        structureContract,
+        outline,
+        slotWriteInput
+      );
+
+      console.log(`[generateEpisodeFast] P1: Calling SlotWriter with relaxed slots`);
+      slotOutput = await writeSlots({
+        slots: relaxedSlots,
+        context: {
+          project,
+          bible: project.bible,
+          characters: project.characters,
+          outline,
+          pacingContext,
+          storyMemory: memoryBefore,
+          characterFactBlocks: promptInjection
+        },
+        outputMode: 'COMMERCIAL_SCRIPT'
+      });
+
+      // P1: 验证 Relaxed Retry 的结果
+      console.log(`[generateEpisodeFast] P1: Validating relaxed slots`);
+      const relaxedValidation = validateSlots(structureContract, slotOutput);
+
+      if (relaxedValidation.valid) {
+        console.log(`[generateEpisodeFast] P1: Relaxed Retry succeeded`);
+        // 记录 metrics
+        try {
+          metrics.recordRetry(episodeIndex, MAX_SLOT_RETRIES);  // MAX_SLOT_RETRIES 次正常重试 + 1 次降级重试
+          metrics.recordSlotValidation(episodeIndex, true, []);
+        } catch (err) {
+          console.warn(`[generateEpisodeFast] Failed to record relaxed retry metrics:`, err);
+        }
+      } else {
+        console.warn(`[generateEpisodeFast] P1: Relaxed Retry failed:`, relaxedValidation.errors);
+        // P1: Relaxed Retry 也失败，继续但会标记为 DEGRADED
+        lastError = new Error(`Relaxed Retry failed: ${relaxedValidation.errors.join(', ')}`);
+      }
+    } catch (error: any) {
+      console.error(`[generateEpisodeFast] P1: Relaxed Retry failed with error:`, error);
+      lastError = error;
+    }
+  }
+
+  // P1: 如果所有重试（包括 Relaxed Retry）都失败，返回 DEGRADED 而非抛出异常
   if (!slotOutput) {
-    throw lastError || new Error(`[generateEpisodeFast] Slot write failed after ${MAX_SLOT_RETRIES} attempts`);
+    console.log(`[generateEpisodeFast] P1: All retries exhausted, returning DEGRADED episode`);
+    const degradedError = lastError || new Error('Unknown slot validation failure');
+
+    // 构建降级 Summary
+    const degradedSummary = buildDegradedSummary(episodeIndex, degradedError);
+
+    // 返回 DEGRADED 状态的 Episode 对象
+    const degradedEpisode = {
+      episodeIndex,
+      status: EpisodeStatus.DEGRADED,
+      title: outline?.title || `第 ${episodeIndex} 集（降级）`,
+      content: '内容生成失败，已自动降级',
+      outline,
+      act: outline?.act,
+      hook: outline?.hook || '',
+      validation: {
+        fastCheck: { passed: false, errors: [degradedError.message] },
+        qualityCheck: { passed: false, issues: [degradedError.message] }
+      },
+      humanSummary: degradedSummary,
+      metadata: {
+        phase: 1,
+        degradationReason: degradedError.message
+      }
+    };
+
+    // 记录降级 metrics
+    try {
+      metrics.recordRetry(episodeIndex, MAX_SLOT_RETRIES + 1);
+      metrics.recordSlotValidation(episodeIndex, false, [degradedError.message]);
+    } catch (err) {
+      console.warn(`[generateEpisodeFast] Failed to record degradation metrics:`, err);
+    }
+
+    return degradedEpisode as any;
   }
 
   // M16 Step 6: 拼装内容（Assembler 只拼装，不生成）
   console.log(`[generateEpisodeFast] M16 Step 6: Assembling content`);
   let content: string;
   try {
-    content = assembleContent(slotOutput);
+    content = assembleContent(slotOutput, 'COMMERCIAL_SCRIPT', episodeIndex);
   } catch (error: any) {
     console.error(`[generateEpisodeFast] Assembler failed:`, error);
     throw new Error(
@@ -1598,6 +1869,36 @@ export async function generateEpisodeFast({
   }
 
   console.log(`[generateEpisodeFast] EP${episodeIndex} generated successfully (DRAFT) with Structure-First flow`);
+
+  // P4.2: 如果有用户指令，记录应用后的状态
+  if (userInstruction && instructionBeforeRatio !== null) {
+    try {
+      const { recordInstructionAfter } = await import('../intelligence/instructionImpactTracker');
+      await recordInstructionAfter(projectId, userInstruction, episodeIndex);
+    } catch (err) {
+      console.warn(`[generateEpisodeFast] P4.2: Failed to record instruction AFTER state:`, err);
+    }
+  }
+
+  // P5-Lite: 记录 Instruction Impact（不影响现有逻辑）
+  if (userInstruction && instructionBeforeRatio !== null) {
+    try {
+      // 计算应用后的降级率
+      const projectAfter = await projectRepo.get(projectId);
+      if (projectAfter) {
+        const totalEpisodes = projectAfter.episodes.length;
+        const degradedCount = projectAfter.episodes.filter(
+          ep => ep.status === EpisodeStatus.DEGRADED
+        ).length;
+        const afterRatio = totalEpisodes > 0 ? degradedCount / totalEpisodes : 0;
+
+        const { recordInstructionImpact } = await import('../business/projectDNA');
+        await recordInstructionImpact(projectId, userInstruction, instructionBeforeRatio, afterRatio);
+      }
+    } catch (err) {
+      console.warn(`[generateEpisodeFast] P5-Lite: Failed to record instruction impact:`, err);
+    }
+  }
 
   // ========= M13: 计算质量信号（DRAFT 阶段，无 Aligner 结果） =========
   // 注意：DRAFT 阶段可能没有 alignerResult，stateCoherent 信号默认为 false
